@@ -1,37 +1,95 @@
 'use client'
 
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Card, CardContent } from '@/components/ui/card'
 import type { TabActivity } from '@/lib/types'
 
-const ACTIVITIES_PER_PAGE = 50
+const ACTIVITIES_PER_PAGE = 200
+
+// Helper to get week date range
+function getWeekRange(offset = 0) {
+  const now = new Date()
+  const dayOfWeek = now.getDay()
+  const startOfWeek = new Date(now)
+  startOfWeek.setDate(now.getDate() - dayOfWeek - (offset * 7))
+  startOfWeek.setHours(0, 0, 0, 0)
+
+  const endOfWeek = new Date(startOfWeek)
+  endOfWeek.setDate(startOfWeek.getDate() + 6)
+  endOfWeek.setHours(23, 59, 59, 999)
+
+  return { start: startOfWeek.toISOString(), end: endOfWeek.toISOString() }
+}
+
+// Helper to get date range (single day)
+function getDayRange(dateStr: string) {
+  const startDate = new Date(dateStr + 'T00:00:00').toISOString()
+  const endDate = new Date(dateStr + 'T23:59:59').toISOString()
+  return { start: startDate, end: endDate }
+}
+
+type ViewMode = 'today' | 'yesterday' | 'week' | 'last-week'
+
+interface GroupedActivity {
+  url: string
+  title: string | null
+  domain: string | null
+  count: number
+  totalSeconds: number
+  firstVisit: string
+  lastVisit: string
+  activities: TabActivity[]
+}
 
 export default function TrackedActivityPage() {
   const router = useRouter()
   const [activities, setActivities] = useState<TabActivity[]>([])
   const [loading, setLoading] = useState(false)
   const [hasMore, setHasMore] = useState(true)
-  const [filterDate, setFilterDate] = useState(new Date().toISOString().split('T')[0])
+  const [viewMode, setViewMode] = useState<ViewMode>('week')
   const [userId, setUserId] = useState<string | null>(null)
   const [page, setPage] = useState(0)
   const observerTarget = useRef<HTMLDivElement>(null)
+  const [dateRange, setDateRange] = useState<{ start: string; end: string }>(getWeekRange(0))
 
   useEffect(() => {
     getCurrentUser()
   }, [])
 
-  // Reset and fetch new activities when date changes
+  // Reset and fetch new activities when view changes
   useEffect(() => {
     if (userId) {
+      let range: { start: string; end: string }
+
+      switch (viewMode) {
+        case 'today':
+          range = getDayRange(new Date().toISOString().split('T')[0])
+          break
+        case 'yesterday':
+          const yesterday = new Date()
+          yesterday.setDate(yesterday.getDate() - 1)
+          range = getDayRange(yesterday.toISOString().split('T')[0])
+          break
+        case 'week':
+          range = getWeekRange(0)
+          break
+        case 'last-week':
+          range = getWeekRange(1)
+          break
+        default:
+          range = getWeekRange(0)
+      }
+
+      setDateRange(range)
       setActivities([])
       setPage(0)
       setHasMore(true)
-      fetchActivities(0, true)
+      fetchActivities(0, true, range)
     }
-  }, [userId, filterDate])
+  }, [userId, viewMode])
 
   const getCurrentUser = async () => {
     const { data: { user } } = await supabase.auth.getUser()
@@ -42,7 +100,7 @@ export default function TrackedActivityPage() {
     }
   }
 
-  const fetchActivities = async (pageNum: number, reset = false) => {
+  const fetchActivities = async (pageNum: number, reset = false, range = dateRange) => {
     if (!userId) return
 
     if (reset) {
@@ -50,15 +108,13 @@ export default function TrackedActivityPage() {
     }
 
     const startIndex = pageNum * ACTIVITIES_PER_PAGE
-    const startDate = new Date(filterDate + 'T00:00:00').toISOString()
-    const endDate = new Date(filterDate + 'T23:59:59').toISOString()
 
     const { data, error } = await supabase
       .from('tab_activity')
       .select('*')
       .eq('user_id', userId)
-      .gte('started_at', startDate)
-      .lte('started_at', endDate)
+      .gte('started_at', range.start)
+      .lte('started_at', range.end)
       .order('started_at', { ascending: false })
       .range(startIndex, startIndex + ACTIVITIES_PER_PAGE - 1)
 
@@ -81,7 +137,7 @@ export default function TrackedActivityPage() {
         if (entries[0].isIntersecting && hasMore && !loading) {
           const nextPage = page + 1
           setPage(nextPage)
-          fetchActivities(nextPage)
+          fetchActivities(nextPage, false)
         }
       },
       { threshold: 0.1 }
@@ -99,9 +155,48 @@ export default function TrackedActivityPage() {
     }
   }, [hasMore, loading, page])
 
+  // Group activities by URL
+  const groupedActivities: GroupedActivity[] = Object.values(
+    activities.reduce((acc, activity) => {
+      const key = activity.url
+      if (!acc[key]) {
+        acc[key] = {
+          url: activity.url,
+          title: activity.title,
+          domain: activity.domain,
+          count: 0,
+          totalSeconds: 0,
+          firstVisit: activity.started_at,
+          lastVisit: activity.started_at,
+          activities: []
+        }
+      }
+      acc[key].count++
+      acc[key].totalSeconds += activity.duration_seconds || 0
+      if (activity.started_at < acc[key].firstVisit) {
+        acc[key].firstVisit = activity.started_at
+      }
+      if (activity.started_at > acc[key].lastVisit) {
+        acc[key].lastVisit = activity.started_at
+      }
+      acc[key].activities.push(activity)
+      return acc
+    }, {} as Record<string, GroupedActivity>)
+  ).sort((a, b) => b.lastVisit.localeCompare(a.lastVisit))
+
+  // Group by date for display
+  const groupedByDate: Record<string, GroupedActivity[]> = {}
+  groupedActivities.forEach(a => {
+    const date = new Date(a.lastVisit).toISOString().split('T')[0]
+    if (!groupedByDate[date]) {
+      groupedByDate[date] = []
+    }
+    groupedByDate[date].push(a)
+  })
+
   // Calculate statistics
-  const totalTabs = activities.length
-  const totalSeconds = activities.reduce((sum, a) => sum + (a.duration_seconds || 0), 0)
+  const totalVisits = groupedActivities.reduce((sum, a) => sum + a.count, 0)
+  const totalSeconds = groupedActivities.reduce((sum, a) => sum + a.totalSeconds, 0)
   const totalMinutes = Math.floor(totalSeconds / 60)
   const totalHours = (totalMinutes / 60).toFixed(1)
 
@@ -133,6 +228,34 @@ export default function TrackedActivityPage() {
     return new Date(dateString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
 
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString)
+    const today = new Date()
+    const yesterday = new Date(today)
+    yesterday.setDate(yesterday.getDate() - 1)
+
+    if (date.toDateString() === today.toDateString()) return 'Today'
+    if (date.toDateString() === yesterday.toDateString()) return 'Yesterday'
+    return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+  }
+
+  const getViewLabel = () => {
+    switch (viewMode) {
+      case 'today': return 'Today'
+      case 'yesterday': return 'Yesterday'
+      case 'week': return 'This Week'
+      case 'last-week': return 'Last Week'
+    }
+  }
+
+  const getDomain = (url: string) => {
+    try {
+      return new URL(url).hostname
+    } catch {
+      return url
+    }
+  }
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -143,21 +266,62 @@ export default function TrackedActivityPage() {
               View your browsing history and time spent
             </p>
           </div>
-          <input
-            type="date"
-            value={filterDate}
-            onChange={(e) => setFilterDate(e.target.value)}
-            className="px-4 py-2 rounded-lg border cursor-pointer"
-            style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
-          />
         </div>
 
-        {/* Stats - Show immediately with current data */}
+        {/* View Mode Selector */}
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={() => setViewMode('today')}
+            className={`px-4 py-2 rounded-lg font-medium transition-all ${viewMode === 'today' ? 'bg-blue-600 text-white' : ''}`}
+            style={{
+              backgroundColor: viewMode === 'today' ? undefined : 'var(--bg-secondary)',
+              color: viewMode === 'today' ? undefined : 'var(--text-primary)',
+              cursor: 'pointer'
+            }}
+          >
+            Today
+          </button>
+          <button
+            onClick={() => setViewMode('yesterday')}
+            className={`px-4 py-2 rounded-lg font-medium transition-all ${viewMode === 'yesterday' ? 'bg-blue-600 text-white' : ''}`}
+            style={{
+              backgroundColor: viewMode === 'yesterday' ? undefined : 'var(--bg-secondary)',
+              color: viewMode === 'yesterday' ? undefined : 'var(--text-primary)',
+              cursor: 'pointer'
+            }}
+          >
+            Yesterday
+          </button>
+          <button
+            onClick={() => setViewMode('week')}
+            className={`px-4 py-2 rounded-lg font-medium transition-all ${viewMode === 'week' ? 'bg-blue-600 text-white' : ''}`}
+            style={{
+              backgroundColor: viewMode === 'week' ? undefined : 'var(--bg-secondary)',
+              color: viewMode === 'week' ? undefined : 'var(--text-primary)',
+              cursor: 'pointer'
+            }}
+          >
+            This Week
+          </button>
+          <button
+            onClick={() => setViewMode('last-week')}
+            className={`px-4 py-2 rounded-lg font-medium transition-all ${viewMode === 'last-week' ? 'bg-blue-600 text-white' : ''}`}
+            style={{
+              backgroundColor: viewMode === 'last-week' ? undefined : 'var(--bg-secondary)',
+              color: viewMode === 'last-week' ? undefined : 'var(--text-primary)',
+              cursor: 'pointer'
+            }}
+          >
+            Last Week
+          </button>
+        </div>
+
+        {/* Stats */}
         <div className="grid grid-cols-3 gap-4">
           <Card>
             <CardContent className="p-6 text-center">
-              <p className="text-3xl font-bold text-blue-600">{totalTabs}</p>
-              <p style={{ color: 'var(--text-secondary)' }}>Tabs Opened</p>
+              <p className="text-3xl font-bold text-blue-600">{totalVisits}</p>
+              <p style={{ color: 'var(--text-secondary)' }}>Total Visits ({getViewLabel()})</p>
             </CardContent>
           </Card>
           <Card>
@@ -178,7 +342,7 @@ export default function TrackedActivityPage() {
         {topDomains.length > 0 && (
           <Card>
             <CardContent className="p-6">
-              <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Top Websites Today</h2>
+              <h2 className="text-lg font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Top Websites ({getViewLabel()})</h2>
               <div className="space-y-3">
                 {topDomains.map(([domain, stats]) => (
                   <div key={domain} className="flex items-center justify-between">
@@ -202,67 +366,86 @@ export default function TrackedActivityPage() {
           </Card>
         )}
 
-        {/* Activity List with infinite scroll */}
+        {/* Activity List grouped by date and URL */}
         {loading && activities.length === 0 ? (
           <div className="space-y-3">
-            {[1, 2, 3, 4, 5].map(i => (
+            {[1, 2, 3].map(i => (
               <div key={i} className="p-4 rounded-lg animate-pulse" style={{ backgroundColor: 'var(--bg-secondary)' }} />
             ))}
           </div>
         ) : activities.length === 0 ? (
           <Card>
             <CardContent className="p-12 text-center" style={{ color: 'var(--text-secondary)' }}>
-              No activity tracked for this date yet.
+              No activity tracked for {getViewLabel().toLowerCase()} yet.
             </CardContent>
           </Card>
         ) : (
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Activity Timeline</h2>
-                <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                  Showing {activities.length} {activities.length === 1 ? 'entry' : 'entries'}
-                </span>
-              </div>
-              <div className="space-y-3">
-                {activities.map(activity => (
-                  <div
-                    key={activity.id}
-                    className="p-4 rounded-lg hover:bg-gray-50 transition-all duration-75"
-                    style={{ backgroundColor: 'var(--bg-secondary)' }}
-                  >
-                    <div className="flex items-start gap-4">
-                      <img
-                        src={`https://www.google.com/s2/favicons?domain=${activity.domain}&sz=32`}
-                        className="w-8 h-8 rounded"
-                        alt=""
-                        loading="lazy"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                          {activity.title || activity.url}
-                        </p>
-                        <p className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>{activity.url}</p>
+          <div className="space-y-6">
+            {Object.entries(groupedByDate)
+              .sort((a, b) => b[0].localeCompare(a[0]))
+              .map(([date, dateActivities]) => (
+                <div key={date}>
+                  <h3 className="text-sm font-semibold mb-3 uppercase tracking-wide" style={{ color: 'var(--text-secondary)' }}>
+                    {formatDate(date)}
+                  </h3>
+                  <Card>
+                    <CardContent className="p-4">
+                      <div className="space-y-2">
+                        {dateActivities.map((item, idx) => (
+                          <a
+                            key={`${item.url}-${idx}`}
+                            href={item.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block"
+                          >
+                            <div
+                              className="p-3 rounded-lg hover:bg-blue-50 transition-all duration-200 hover:scale-[1.02] hover:shadow-lg cursor-pointer"
+                              style={{ backgroundColor: 'var(--bg-secondary)' }}
+                            >
+                              <div className="flex items-start gap-4">
+                                <img
+                                  src={`https://www.google.com/s2/favicons?domain=${getDomain(item.url)}&sz=32`}
+                                  className="w-8 h-8 rounded flex-shrink-0"
+                                  alt=""
+                                  loading="lazy"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                                    {item.title || item.url}
+                                  </p>
+                                  <p className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>{item.url}</p>
+                                </div>
+                                <div className="text-right flex-shrink-0">
+                                  <div className="flex items-center gap-3">
+                                    <span className="px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                                      {item.count} {item.count === 1 ? 'visit' : 'visits'}
+                                    </span>
+                                    <span className="font-medium text-green-600">{formatDuration(item.totalSeconds)}</span>
+                                  </div>
+                                  <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                                    {formatTime(item.lastVisit)}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          </a>
+                        ))}
                       </div>
-                      <div className="text-right flex-shrink-0">
-                        <p className="font-medium text-green-600">{formatDuration(activity.duration_seconds)}</p>
-                        <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>{formatTime(activity.started_at)}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Load more indicator / observer target */}
-              {hasMore && (
-                <div ref={observerTarget} className="py-4 text-center">
-                  {loading && (
-                    <div className="inline-block w-6 h-6 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin" />
-                  )}
+                    </CardContent>
+                  </Card>
                 </div>
-              )}
-            </CardContent>
-          </Card>
+              ))}
+
+            {/* Load more indicator */}
+            {hasMore && (
+              <div ref={observerTarget} className="py-4 text-center">
+                {loading && (
+                  <div className="inline-block w-6 h-6 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin" />
+                )}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </DashboardLayout>

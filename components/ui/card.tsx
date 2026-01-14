@@ -4,9 +4,11 @@ interface CardProps {
   children: React.ReactNode
   className?: string
   style?: React.CSSProperties
+  onClick?: () => void
+  onMouseEnter?: () => void
 }
 
-export function Card({ children, className = '', style }: CardProps) {
+export function Card({ children, className = '', style, onClick, onMouseEnter }: CardProps) {
   return (
     <div
       className={`rounded-lg shadow-sm border ${className}`}
@@ -15,6 +17,8 @@ export function Card({ children, className = '', style }: CardProps) {
         borderColor: 'var(--border-color)',
         ...style
       }}
+      onClick={onClick}
+      onMouseEnter={onMouseEnter}
     >
       {children}
     </div>

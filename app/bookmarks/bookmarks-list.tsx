@@ -10,6 +10,13 @@ import { Textarea } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import type { Bookmark, Folder, Tag } from '@/lib/types'
 
+// In-memory cache for faster loads (30 second TTL)
+const bookmarksCache = {
+  data: null as { bookmarks: Bookmark[]; folders: Folder[]; tags: Tag[]; bookmarkTags: Record<string, Tag[]> } | null,
+  timestamp: 0,
+  CACHE_TTL: 30000
+}
+
 export function BookmarksList() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -19,6 +26,7 @@ export function BookmarksList() {
   const [folders, setFolders] = useState<Folder[]>([])
   const [tags, setTags] = useState<Tag[]>([])
   const [bookmarkTags, setBookmarkTags] = useState<Record<string, Tag[]>>({})
+  const [loading, setLoading] = useState(true)
 
   const [modalOpen, setModalOpen] = useState(false)
   const [folderModalOpen, setFolderModalOpen] = useState(false)
@@ -60,9 +68,20 @@ export function BookmarksList() {
     }
   }, [searchParams])
 
-  // Fetch all data in parallel on mount
+  // Fetch all data in parallel on mount (with cache)
   useEffect(() => {
     const fetchData = async () => {
+      // Check cache first
+      const now = Date.now()
+      if (bookmarksCache.data && now - bookmarksCache.timestamp < bookmarksCache.CACHE_TTL) {
+        setBookmarks(bookmarksCache.data.bookmarks)
+        setFolders(bookmarksCache.data.folders)
+        setTags(bookmarksCache.data.tags)
+        setBookmarkTags(bookmarksCache.data.bookmarkTags)
+        setLoading(false)
+        return
+      }
+
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
         router.push('/login')
@@ -76,9 +95,9 @@ export function BookmarksList() {
         supabase.from('bookmark_tags').select('bookmark_id, tags(*)'),
       ])
 
-      if (bookmarksRes.data) setBookmarks(bookmarksRes.data)
-      if (foldersRes.data) setFolders(foldersRes.data)
-      if (tagsRes.data) setTags(tagsRes.data)
+      const newBookmarks = bookmarksRes.data || []
+      const newFolders = foldersRes.data || []
+      const newTags = tagsRes.data || []
 
       const tagMap: Record<string, Tag[]> = {}
       bookmarkTagsRes.data?.forEach((bt: any) => {
@@ -87,10 +106,57 @@ export function BookmarksList() {
           tagMap[bt.bookmark_id].push(bt.tags)
         }
       })
+
+      // Update cache
+      bookmarksCache.data = {
+        bookmarks: newBookmarks,
+        folders: newFolders,
+        tags: newTags,
+        bookmarkTags: tagMap
+      }
+      bookmarksCache.timestamp = now
+
+      setBookmarks(newBookmarks)
+      setFolders(newFolders)
+      setTags(newTags)
       setBookmarkTags(tagMap)
+      setLoading(false)
     }
 
     fetchData()
+
+    // Set up realtime subscription for instant updates
+    const setupRealtime = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const channel = supabase
+        .channel('bookmarks-realtime')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'bookmarks',
+            filter: `user_id=eq.${user.id}`
+          },
+          () => {
+            // Invalidate cache and refresh
+            bookmarksCache.data = null
+            bookmarksCache.timestamp = 0
+            fetchData()
+          }
+        )
+        .subscribe()
+
+      return channel
+    }
+
+    setupRealtime()
+
+    return () => {
+      // Cleanup happens automatically when component unmounts
+    }
   }, [])
 
   const filteredBookmarks = bookmarks.filter(b => {
@@ -108,6 +174,12 @@ export function BookmarksList() {
 
     return matchesSearch && matchesFavorite && matchesFolder
   })
+
+  const updateCache = () => {
+    // Invalidate cache when data changes
+    bookmarksCache.data = null
+    bookmarksCache.timestamp = 0
+  }
 
   const updateFilter = (key: string, value: string) => {
     const params = new URLSearchParams(searchParams.toString())
@@ -132,7 +204,12 @@ export function BookmarksList() {
     if (editingBookmark) {
       const { data } = await supabase.from('bookmarks').update(bookmarkData).eq('id', editingBookmark.id).select()
       if (data) {
-        setBookmarks(bookmarks.map(b => b.id === editingBookmark.id ? { ...b, ...data[0] } : b))
+        const updatedBookmarks = bookmarks.map(b => b.id === editingBookmark.id ? { ...b, ...data[0] } : b)
+        setBookmarks(updatedBookmarks)
+        // Update cache
+        if (bookmarksCache.data) {
+          bookmarksCache.data.bookmarks = updatedBookmarks
+        }
       }
       await supabase.from('bookmark_tags').delete().eq('bookmark_id', editingBookmark.id)
       for (const tagId of formData.tag_ids) {
@@ -141,7 +218,12 @@ export function BookmarksList() {
     } else {
       const { data } = await supabase.from('bookmarks').insert({ ...bookmarkData, user_id: user.id }).select()
       if (data) {
-        setBookmarks([data[0], ...bookmarks])
+        const updatedBookmarks = [data[0], ...bookmarks]
+        setBookmarks(updatedBookmarks)
+        // Update cache
+        if (bookmarksCache.data) {
+          bookmarksCache.data.bookmarks = updatedBookmarks
+        }
       }
       for (const tagId of formData.tag_ids) {
         await supabase.from('bookmark_tags').insert({ bookmark_id: data[0].id, tag_id: tagId })
@@ -152,17 +234,32 @@ export function BookmarksList() {
 
   const toggleFavorite = async (bookmark: Bookmark) => {
     await supabase.from('bookmarks').update({ is_favorite: !bookmark.is_favorite }).eq('id', bookmark.id)
-    setBookmarks(bookmarks.map(b => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b))
+    const updatedBookmarks = bookmarks.map(b => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b)
+    setBookmarks(updatedBookmarks)
+    // Update cache
+    if (bookmarksCache.data) {
+      bookmarksCache.data.bookmarks = updatedBookmarks
+    }
   }
 
   const toggleRead = async (bookmark: Bookmark) => {
     await supabase.from('bookmarks').update({ is_read: !bookmark.is_read }).eq('id', bookmark.id)
-    setBookmarks(bookmarks.map(b => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b))
+    const updatedBookmarks = bookmarks.map(b => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b)
+    setBookmarks(updatedBookmarks)
+    // Update cache
+    if (bookmarksCache.data) {
+      bookmarksCache.data.bookmarks = updatedBookmarks
+    }
   }
 
   const deleteBookmark = async (id: string) => {
     await supabase.from('bookmarks').delete().eq('id', id)
-    setBookmarks(bookmarks.filter(b => b.id !== id))
+    const updatedBookmarks = bookmarks.filter(b => b.id !== id)
+    setBookmarks(updatedBookmarks)
+    // Update cache
+    if (bookmarksCache.data) {
+      bookmarksCache.data.bookmarks = updatedBookmarks
+    }
   }
 
   const openModal = async (bookmark?: Bookmark) => {
@@ -224,37 +321,54 @@ export function BookmarksList() {
 
   return (
     <>
-      {/* Filters */}
-      <div className="flex gap-4 flex-wrap items-center">
-        <Input
-          placeholder="Search bookmarks..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-64"
-        />
-        <select
-          value={searchParams.get('folder') || ''}
-          onChange={(e) => updateFilter('folder', e.target.value)}
-          className="px-4 py-2 rounded-lg border cursor-pointer"
-          style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
-        >
-          <option value="">All Folders</option>
-          {folders.map(f => (
-            <option key={f.id} value={f.id}>{f.icon} {f.name}</option>
+      {/* Show loading skeleton while fetching */}
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <div key={i} className="p-4 rounded-lg animate-pulse" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded bg-gray-300" />
+                <div className="flex-1">
+                  <div className="h-4 bg-gray-300 rounded mb-2 w-3/4" />
+                  <div className="h-3 bg-gray-300 rounded w-1/2" />
+                </div>
+              </div>
+            </div>
           ))}
-        </select>
-        <button
-          onClick={() => {
-            const current = searchParams.get('favorite')
-            updateFilter('favorite', current === 'true' ? '' : 'true')
-          }}
-          className={`px-4 py-2 rounded-lg font-medium transition-all duration-75 active:scale-90 ${searchParams.get('favorite') === 'true' ? 'bg-yellow-100 text-yellow-800' : ''}`}
-          style={{ cursor: 'pointer', backgroundColor: searchParams.get('favorite') === 'true' ? undefined : 'var(--bg-secondary)', color: searchParams.get('favorite') === 'true' ? undefined : 'var(--text-primary)' }}
-        >
-          {searchParams.get('favorite') === 'true' ? '⭐ Favorites' : 'Favorites'}
-        </button>
-        <Button variant="secondary" onClick={openFolderModal}>+ New Folder</Button>
-      </div>
+        </div>
+      ) : (
+        <>
+          {/* Filters */}
+          <div className="flex gap-4 flex-wrap items-center">
+            <Input
+              placeholder="Search bookmarks..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-64"
+            />
+            <select
+              value={searchParams.get('folder') || ''}
+              onChange={(e) => updateFilter('folder', e.target.value)}
+              className="px-4 py-2 rounded-lg border cursor-pointer"
+              style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
+            >
+              <option value="">All Folders</option>
+              {folders.map(f => (
+                <option key={f.id} value={f.id}>{f.icon} {f.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => {
+                const current = searchParams.get('favorite')
+                updateFilter('favorite', current === 'true' ? '' : 'true')
+              }}
+              className={`px-4 py-2 rounded-lg font-medium transition-all duration-75 active:scale-90 ${searchParams.get('favorite') === 'true' ? 'bg-yellow-100 text-yellow-800' : ''}`}
+              style={{ cursor: 'pointer', backgroundColor: searchParams.get('favorite') === 'true' ? undefined : 'var(--bg-secondary)', color: searchParams.get('favorite') === 'true' ? undefined : 'var(--text-primary)' }}
+            >
+              {searchParams.get('favorite') === 'true' ? '⭐ Favorites' : 'Favorites'}
+            </button>
+            <Button variant="secondary" onClick={openFolderModal}>+ New Folder</Button>
+          </div>
 
       {/* Bookmarks Grid */}
       {filteredBookmarks.length === 0 ? (
@@ -450,6 +564,8 @@ export function BookmarksList() {
         onClick={() => openModal()}
         style={{ display: 'none' }}
       />
+        </>
+      )}
     </>
   )
 }

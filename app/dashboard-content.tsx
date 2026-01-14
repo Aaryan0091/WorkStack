@@ -11,10 +11,11 @@ import type { Bookmark, Collection } from '@/lib/types'
 
 const EXTENSION_ID = 'llahljdmcglglkcaadldnbpcpnkdinco'
 
-export function DashboardContent({ initialBookmarks, initialCollections }: { initialBookmarks: Bookmark[]; initialCollections: Collection[] }) {
+export function DashboardContent({ initialBookmarks, initialCollections, initialBookmarksCount }: { initialBookmarks: Bookmark[]; initialCollections: Collection[]; initialBookmarksCount: number }) {
   const router = useRouter()
-  const [bookmarks, setBookmarks] = useState(initialBookmarks)
-  const [collections, setCollections] = useState(initialCollections)
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>(initialBookmarks)
+  const [collections, setCollections] = useState<Collection[]>(initialCollections)
+  const [totalBookmarks, setTotalBookmarks] = useState<number>(initialBookmarksCount)
   const [isTracking, setIsTracking] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [hasSavedSession, setHasSavedSession] = useState(false)
@@ -28,35 +29,98 @@ export function DashboardContent({ initialBookmarks, initialCollections }: { ini
     duration_seconds: number
   }>>([])
   const checkIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
+
+  // Fetch fresh data from server
+  const fetchFreshData = async () => {
+    const [recentBookmarksRes, allBookmarksRes, collectionsRes] = await Promise.all([
+      supabase.from('bookmarks').select('*').limit(5).order('created_at', { ascending: false }),
+      supabase.from('bookmarks').select('id', { count: 'exact', head: true }),
+      supabase.from('collections').select('*'),
+    ])
+    if (recentBookmarksRes.data) setBookmarks(recentBookmarksRes.data)
+    if (collectionsRes.data) setCollections(collectionsRes.data)
+    if (allBookmarksRes.count !== null) setTotalBookmarks(allBookmarksRes.count)
+  }
 
   // Check extension on mount (after hydration)
   useEffect(() => {
     checkExtensionInstalled()
     // Store auth token in extension on page load
     storeAuthTokenInExtension()
+    // Fetch fresh data on mount
+    fetchFreshData()
+
+    // Listen for auth state changes and sync token to extension
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: any) => {
+      console.log('Auth state changed:', event, session?.access_token ? 'token present' : 'no token')
+      if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN' || event === 'USER_UPDATED') {
+        // Use the session from the event directly
+        if (session?.access_token) {
+          storeAuthTokenToExtension(session.access_token)
+        }
+      }
+    })
+
+    // Set up realtime subscription for instant updates
+    const setupRealtime = async () => {
+      const { data, error } = await supabase.auth.getUser()
+      if (error || !data?.user) return
+
+      const user = data.user
+      const channel = supabase
+        .channel('bookmarks-changes')
+        .on(
+          'postgres_changes',
+          {
+            event: '*', // Listen to all changes (INSERT, UPDATE, DELETE)
+            schema: 'public',
+            table: 'bookmarks',
+            filter: `user_id=eq.${user.id}`
+          },
+          () => {
+            console.log('Bookmarks changed, refreshing...')
+            fetchFreshData()
+          }
+        )
+        .subscribe()
+
+      channelRef.current = channel
+    }
+
+    setupRealtime()
+
     return () => {
       if (checkIntervalRef.current) clearInterval(checkIntervalRef.current)
+      subscription.unsubscribe()
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current)
+      }
     }
   }, [])
 
   // Store auth token in extension
-  const storeAuthTokenInExtension = async () => {
+  const storeAuthTokenToExtension = (token: string) => {
     const chrome = (window as any).chrome
     if (!chrome?.runtime) return
 
+    chrome.runtime.sendMessage(EXTENSION_ID, {
+      action: 'storeAuthToken',
+      authToken: token,
+      apiBaseUrl: window.location.origin
+    }, (response: any) => {
+      if (chrome.runtime.lastError) {
+        console.log('Extension not reachable')
+      } else {
+        console.log('Auth token synced to extension')
+      }
+    })
+  }
+
+  const storeAuthTokenInExtension = async () => {
     const { data: { session } } = await supabase.auth.getSession()
     if (session?.access_token) {
-      chrome.runtime.sendMessage(EXTENSION_ID, {
-        action: 'storeAuthToken',
-        authToken: session.access_token,
-        apiBaseUrl: window.location.origin
-      }, (response: any) => {
-        if (chrome.runtime.lastError) {
-          console.log('Extension not reachable')
-        } else {
-          console.log('Auth token synced to extension')
-        }
-      })
+      storeAuthTokenToExtension(session.access_token)
     }
   }
 
@@ -116,6 +180,11 @@ export function DashboardContent({ initialBookmarks, initialCollections }: { ini
     const apiBaseUrl = window.location.origin
     const chrome = (window as any).chrome
 
+    // First store the auth token, then start tracking
+    if (session?.access_token) {
+      storeAuthTokenToExtension(session.access_token)
+    }
+
     chrome.runtime.sendMessage(EXTENSION_ID, {
       action: 'startTracking',
       userId: user.id,
@@ -147,10 +216,10 @@ export function DashboardContent({ initialBookmarks, initialCollections }: { ini
     const chrome = (window as any).chrome
     if (!chrome?.runtime) return
 
-    chrome.runtime.sendMessage(EXTENSION_ID, { action: 'resumeActivity' }, (response: any) => {
+    chrome.runtime.sendMessage(EXTENSION_ID, { action: 'openSavedTabs' }, (response: any) => {
       if (response?.success) {
-        setIsTracking(true)
-        setIsPaused(false)
+        // Tabs opened but tracking not started
+        console.log('Saved tabs opened')
       }
     })
   }
@@ -178,7 +247,7 @@ export function DashboardContent({ initialBookmarks, initialCollections }: { ini
   }
 
   const stats = {
-    total: bookmarks.length,
+    total: totalBookmarks,
     unread: bookmarks.filter(b => !b.is_read).length,
     favorites: bookmarks.filter(b => b.is_favorite).length,
     collections: collections.length,

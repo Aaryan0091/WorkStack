@@ -41,6 +41,7 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
   })
   const [tagInput, setTagInput] = useState('')
   const [folderName, setFolderName] = useState('')
+  const [formError, setFormError] = useState('')
   const processedUrlParams = useRef(false)
 
   // Handle URL parameters from extension popup
@@ -91,6 +92,7 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setFormError('')
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
@@ -111,7 +113,21 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
       for (const tagId of formData.tag_ids) {
         await supabase.from('bookmark_tags').insert({ bookmark_id: editingBookmark.id, tag_id: tagId })
       }
+      closeModal()
     } else {
+      // Check if URL already exists
+      const { data: existingBookmark } = await supabase
+        .from('bookmarks')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('url', formData.url)
+        .single()
+
+      if (existingBookmark) {
+        setFormError('This URL is already bookmarked')
+        return
+      }
+
       const { data } = await supabase.from('bookmarks').insert({ ...bookmarkData, user_id: user.id }).select()
       if (data) {
         setBookmarks([data[0], ...bookmarks])
@@ -119,8 +135,8 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
       for (const tagId of formData.tag_ids) {
         await supabase.from('bookmark_tags').insert({ bookmark_id: data[0].id, tag_id: tagId })
       }
+      closeModal()
     }
-    closeModal()
   }
 
   const toggleFavorite = async (bookmark: Bookmark) => {
@@ -161,6 +177,7 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
   const closeModal = () => {
     setModalOpen(false)
     setEditingBookmark(null)
+    setFormError('')
   }
 
   const addTag = async () => {
@@ -402,6 +419,9 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
               ))}
             </div>
           </div>
+          {formError && (
+            <p className="text-red-500 text-sm">{formError}</p>
+          )}
           <div className="flex gap-3 pt-2">
             <Button type="button" variant="secondary" onClick={closeModal} className="flex-1">Cancel</Button>
             <Button type="submit" className="flex-1">{editingBookmark ? 'Update' : 'Add'} Bookmark</Button>

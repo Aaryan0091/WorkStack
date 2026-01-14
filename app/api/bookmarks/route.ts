@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { url, title, description, notes, folder_id } = body
+    const { url, title, description, notes, folder_id, collection_id } = body
 
     if (!url) {
       const response = NextResponse.json({ error: 'URL is required' }, { status: 400 })
@@ -68,6 +68,20 @@ export async function POST(request: NextRequest) {
       .single()
 
     if (existing) {
+      // If adding to a collection, update the existing bookmark
+      if (collection_id) {
+        const { data: updated } = await supabase
+          .from('bookmarks')
+          .update({ collection_id })
+          .eq('id', existing.id)
+          .select()
+          .single()
+
+        if (updated) {
+          const response = NextResponse.json({ success: true, bookmark: updated, updated: true })
+          return corsHeaders(response)
+        }
+      }
       const response = NextResponse.json({ error: 'Bookmark already exists' }, { status: 409 })
       return corsHeaders(response)
     }
@@ -82,6 +96,9 @@ export async function POST(request: NextRequest) {
         description: description || null,
         notes: notes || null,
         folder_id: folder_id || null,
+        collection_id: collection_id || null,
+        is_read: false,
+        is_favorite: false,
       })
       .select()
       .single()
