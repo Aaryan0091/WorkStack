@@ -4,6 +4,9 @@ import { NextRequest, NextResponse } from 'next/server'
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
+const GROQ_API_KEY = process.env.GROQ_API_KEY!
+
+// Base URL for internal API calls (auto-detected from request)
 
 // Helper to add CORS headers for extension requests
 function corsHeaders(response: NextResponse) {
@@ -97,7 +100,7 @@ export async function POST(request: NextRequest) {
         notes: notes || null,
         folder_id: folder_id || null,
         collection_id: collection_id || null,
-        is_read: false,
+        is_read: true,
         is_favorite: false,
       })
       .select()
@@ -107,6 +110,21 @@ export async function POST(request: NextRequest) {
       console.error('Supabase error:', error)
       const response = NextResponse.json({ error: error.message }, { status: 500 })
       return corsHeaders(response)
+    }
+
+    // Trigger AI auto-tagging in background (fire and forget)
+    if (GROQ_API_KEY && data?.id) {
+      // Auto-detect base URL from request (works in both dev and production)
+      const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`
+      // Don't await - let it run in background
+      fetch(`${baseUrl}/api/ai/auto-tag`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authHeader || '',
+        },
+        body: JSON.stringify({ bookmark_id: data.id }),
+      }).catch((err) => console.error('Background auto-tag failed:', err))
     }
 
     const response = NextResponse.json({ success: true, bookmark: data })

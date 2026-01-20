@@ -23,20 +23,32 @@ export function LoginForm({ onToggleMode }: LoginFormProps) {
   // Store auth token in extension after login
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event: string, session: any) => {
-      const chrome = (window as any).chrome
-
       // Store token on sign in and when token refreshes
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.access_token) {
         const apiBaseUrl = window.location.origin
         console.log('Storing auth token in extension:', { event, apiBaseUrl })
 
+        const chrome = (window as any).chrome
         if (chrome?.runtime) {
+          let responded = false
+          // Fast timeout to prevent hanging on non-Chrome browsers or when extension not installed
+          const timeout = setTimeout(() => {
+            if (!responded) {
+              responded = true
+              console.log('Extension token sync: timeout (extension not installed)')
+            }
+          }, 500)
+
           // Send auth token to extension
           chrome.runtime.sendMessage(EXTENSION_ID, {
             action: 'storeAuthToken',
             authToken: session.access_token,
             apiBaseUrl
           }, (response: any) => {
+            if (responded) return
+            responded = true
+            clearTimeout(timeout)
+
             if (chrome.runtime.lastError) {
               console.log('Extension not installed or not reachable:', chrome.runtime.lastError)
             } else {

@@ -33,8 +33,15 @@ export function BookmarkMenu({
 
     if (buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect()
+      const menuHeight = 180 // Approximate menu height
+      const spaceBelow = window.innerHeight - rect.bottom
+      const spaceAbove = rect.top
+
+      // Position menu above if there's not enough space below
+      const shouldPositionAbove = spaceBelow < menuHeight && spaceAbove > menuHeight
+
       setPosition({
-        top: rect.bottom + 4,
+        top: shouldPositionAbove ? rect.top - menuHeight - 4 : rect.bottom + 4,
         left: rect.right - 192, // Align menu to the right (192px is menu width)
       })
     }

@@ -18,6 +18,7 @@ const navItems: NavItem[] = [
   { href: '/reading-list', label: 'Reading List', icon: '📚' },
   { href: '/collections', label: 'Collections', icon: '📦' },
   { href: '/tracked-activity', label: 'Tracked Activity', icon: '📊' },
+  { href: '/smart-search', label: 'AI Smart Search', icon: '🤖' },
 ]
 
 // Simple cache for user email to avoid repeated fetches
@@ -51,6 +52,11 @@ export function Sidebar() {
     getCachedEmail().then(e => {
       if (e) setEmail(e)
     })
+
+    // Prefetch all routes on mount for instant navigation
+    navItems.forEach((item) => {
+      router.prefetch(item.href)
+    })
   }, [])
 
   const handleLogout = async () => {
@@ -75,9 +81,8 @@ export function Sidebar() {
           {mounted && (
             <button
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="rounded-lg transition-all duration-75 active:scale-90"
+              className="transition-all duration-75 active:scale-90"
               style={{
-                backgroundColor: 'var(--bg-secondary)',
                 color: 'var(--text-primary)'
               }}
               aria-label="Toggle theme"
@@ -95,6 +100,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              prefetch={true}
               className="flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-75 active:scale-95"
               style={{
                 backgroundColor: isActive ? 'rgba(59, 130, 246, 0.15)' : 'transparent',

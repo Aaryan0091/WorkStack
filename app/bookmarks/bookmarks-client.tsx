@@ -9,16 +9,15 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
-import type { Bookmark, Folder, Tag } from '@/lib/types'
+import type { Bookmark, Tag } from '@/lib/types'
 
 interface Props {
   bookmarks: Bookmark[]
-  folders: Folder[]
   tags: Tag[]
   bookmarkTags: Record<string, Tag[]>
 }
 
-export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bookmarkTags: initialBookmarkTags }: Props) {
+export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTags: initialBookmarkTags }: Props) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [isPending, startTransition] = useTransition()
@@ -27,7 +26,6 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
   const [bookmarkTags, setBookmarkTags] = useState(initialBookmarkTags)
 
   const [modalOpen, setModalOpen] = useState(false)
-  const [folderModalOpen, setFolderModalOpen] = useState(false)
   const [editingBookmark, setEditingBookmark] = useState<Bookmark | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
 
@@ -40,9 +38,10 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
     tag_ids: [] as string[],
   })
   const [tagInput, setTagInput] = useState('')
-  const [folderName, setFolderName] = useState('')
   const [formError, setFormError] = useState('')
   const processedUrlParams = useRef(false)
+  const [tagContextMenu, setTagContextMenu] = useState<{ x: number; y: number; tagId: string } | null>(null)
+  const [tagAdded, setTagAdded] = useState(false)
 
   // Handle URL parameters from extension popup
   useEffect(() => {
@@ -77,10 +76,7 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
     const favoriteFilter = searchParams.get('favorite')
     const matchesFavorite = favoriteFilter !== 'true' || b.is_favorite
 
-    const folderFilter = searchParams.get('folder')
-    const matchesFolder = !folderFilter || b.folder_id === folderFilter
-
-    return matchesSearch && matchesFavorite && matchesFolder
+    return matchesSearch && matchesFavorite
   })
 
   const updateFilter = (key: string, value: string) => {
@@ -190,26 +186,27 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
       tags.push(data[0])
       setFormData({ ...formData, tag_ids: [...formData.tag_ids, data[0].id] })
       setTagInput('')
+      setTagAdded(true)
+      setTimeout(() => setTagAdded(false), 300)
     }
   }
 
-  const createFolder = async () => {
-    if (!folderName.trim()) return
-
+  const deleteTag = async (tagId: string) => {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
-    const { data } = await supabase.from('folders').insert({ name: folderName.trim(), user_id: user.id }).select()
-    if (data) {
-      setFolderName('')
-      setFolderModalOpen(false)
-      router.refresh()
+    await supabase.from('tags').delete().eq('id', tagId).eq('user_id', user.id)
+    const index = tags.findIndex(t => t.id === tagId)
+    if (index > -1) {
+      tags.splice(index, 1)
     }
+    setFormData({ ...formData, tag_ids: formData.tag_ids.filter(id => id !== tagId) })
+    setTagContextMenu(null)
   }
 
-  const openFolderModal = () => {
-    setFolderName('')
-    setFolderModalOpen(true)
+  const handleTagRightClick = (e: React.MouseEvent, tagId: string) => {
+    e.preventDefault()
+    setTagContextMenu({ x: e.clientX, y: e.clientY, tagId })
   }
 
   return (
@@ -231,17 +228,6 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-64"
           />
-          <select
-            value={searchParams.get('folder') || ''}
-            onChange={(e) => updateFilter('folder', e.target.value)}
-            className="px-4 py-2 rounded-lg border cursor-pointer"
-            style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
-          >
-            <option value="">All Folders</option>
-            {folders.map(f => (
-              <option key={f.id} value={f.id}>{f.icon} {f.name}</option>
-            ))}
-          </select>
           <button
             onClick={() => {
               const current = searchParams.get('favorite')
@@ -252,7 +238,6 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
           >
             {searchParams.get('favorite') === 'true' ? '⭐ Favorites' : 'Favorites'}
           </button>
-          <Button variant="secondary" onClick={openFolderModal}>+ New Folder</Button>
         </div>
 
         {/* Bookmarks Grid */}
@@ -375,20 +360,6 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
             rows={3}
           />
           <div>
-            <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-primary)' }}>Folder</label>
-            <select
-              value={formData.folder_id}
-              onChange={(e) => setFormData({ ...formData, folder_id: e.target.value })}
-              className="w-full px-3 py-2 border rounded-lg cursor-pointer"
-              style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
-            >
-              <option value="">No folder</option>
-              {folders.map(f => (
-                <option key={f.id} value={f.id}>{f.icon} {f.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
             <label className="block text-sm font-medium mb-1" style={{ color: 'var(--text-primary)' }}>Tags</label>
             <div className="flex gap-2 mb-2">
               <Input
@@ -397,26 +368,54 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
                 onChange={(e) => setTagInput(e.target.value)}
                 className="flex-1"
               />
-              <Button type="button" onClick={addTag} variant="secondary">Add</Button>
+              <Button
+                type="button"
+                onClick={addTag}
+                variant="secondary"
+                className="!active:scale-100 !focus:ring-0 !focus:ring-offset-0"
+                style={{
+                  backgroundColor: tagAdded ? 'rgba(34, 197, 94, 0.3)' : undefined,
+                  transition: 'background-color 0.2s ease'
+                }}
+              >
+                Add
+              </Button>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {tags.map(tag => (
-                <button
-                  key={tag.id}
-                  type="button"
-                  onClick={() => {
-                    if (formData.tag_ids.includes(tag.id)) {
-                      setFormData({ ...formData, tag_ids: formData.tag_ids.filter(id => id !== tag.id) })
-                    } else {
-                      setFormData({ ...formData, tag_ids: [...formData.tag_ids, tag.id] })
-                    }
-                  }}
-                  className={`px-3 py-1 rounded-full text-sm transition-all duration-75 active:scale-90 ${formData.tag_ids.includes(tag.id) ? 'ring-2 ring-offset-2' : ''}`}
-                  style={{ backgroundColor: tag.color + '20', color: tag.color, cursor: 'pointer' }}
-                >
-                  {tag.name}
-                </button>
-              ))}
+            <div
+              className="flex flex-wrap gap-2 overflow-y-auto pr-1 tags-scroll-container"
+              style={{
+                maxHeight: '5.5rem',
+                scrollbarWidth: 'thin',
+                scrollbarColor: 'rgba(156, 163, 175, 0.5) transparent'
+              }}
+            >
+              {tags
+                .filter(tag => tag.name.toLowerCase().includes(tagInput.toLowerCase()))
+                .sort((a, b) => {
+                  const aSelected = formData.tag_ids.includes(a.id)
+                  const bSelected = formData.tag_ids.includes(b.id)
+                  if (aSelected && !bSelected) return -1
+                  if (!aSelected && bSelected) return 1
+                  return 0
+                })
+                .map(tag => (
+                  <button
+                    key={tag.id}
+                    type="button"
+                    onClick={() => {
+                      if (formData.tag_ids.includes(tag.id)) {
+                        setFormData({ ...formData, tag_ids: formData.tag_ids.filter(id => id !== tag.id) })
+                      } else {
+                        setFormData({ ...formData, tag_ids: [...formData.tag_ids, tag.id] })
+                      }
+                    }}
+                    onContextMenu={(e) => handleTagRightClick(e, tag.id)}
+                    className={`px-3 py-1 rounded-full text-sm transition-all duration-75 active:scale-90 ${formData.tag_ids.includes(tag.id) ? 'ring-2 ring-offset-2' : ''}`}
+                    style={{ backgroundColor: tag.color + '20', color: tag.color, cursor: 'pointer' }}
+                  >
+                    {tag.name}
+                  </button>
+                ))}
             </div>
           </div>
           {formError && (
@@ -429,23 +428,42 @@ export function BookmarksClient({ bookmarks: initialBookmarks, folders, tags, bo
         </form>
       </Modal>
 
-      {/* New Folder Modal */}
-      <Modal isOpen={folderModalOpen} onClose={() => setFolderModalOpen(false)} title="New Folder">
-        <form onSubmit={createFolder} className="space-y-4">
-          <Input
-            label="Folder Name"
-            placeholder="My Folder"
-            value={folderName}
-            onChange={(e) => setFolderName(e.target.value)}
-            required
-            autoFocus
+      {/* Tag Context Menu */}
+      {tagContextMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setTagContextMenu(null)}
           />
-          <div className="flex gap-3 pt-2">
-            <Button type="button" variant="secondary" onClick={() => setFolderModalOpen(false)} className="flex-1">Cancel</Button>
-            <Button type="submit" className="flex-1">Create Folder</Button>
+          <div
+            className="fixed z-50 p-2 rounded-lg shadow-lg"
+            style={{
+              left: `${tagContextMenu.x}px`,
+              top: `${tagContextMenu.y}px`,
+              backgroundColor: 'var(--bg-primary)',
+              border: '1px solid var(--border-color)',
+              minWidth: '120px'
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => deleteTag(tagContextMenu.tagId)}
+              className="w-full px-3 py-2 text-left text-sm rounded transition-colors"
+              style={{ color: 'var(--text-primary)', cursor: 'pointer' }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = '#fecaca'
+                e.currentTarget.style.color = '#dc2626'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = 'transparent'
+                e.currentTarget.style.color = 'var(--text-primary)'
+              }}
+            >
+              Delete Tag
+            </button>
           </div>
-        </form>
-      </Modal>
+        </>
+      )}
     </DashboardLayout>
   )
 }

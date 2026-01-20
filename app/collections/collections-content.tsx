@@ -10,19 +10,36 @@ import { Textarea } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import type { Collection, Bookmark } from '@/lib/types'
 
-export function CollectionsContent() {
+// Cache for faster loads
+const collectionsCache = {
+  data: null as { collections: Collection[]; collectionBookmarks: Record<string, Bookmark[]> } | null,
+  timestamp: 0,
+  CACHE_TTL: 30000 // 30 seconds
+}
+
+interface CollectionsContentProps {
+  searchQuery: string
+  setSearchQuery: (query: string) => void
+}
+
+export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsContentProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [collections, setCollections] = useState<Collection[]>([])
-  const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
+  const [collectionBookmarks, setCollectionBookmarks] = useState<Record<string, Bookmark[]>>({})
+  const [loading, setLoading] = useState(true)
+  const [availableBookmarks, setAvailableBookmarks] = useState<Bookmark[]>([])
 
   const [modalOpen, setModalOpen] = useState(false)
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [editModalOpen, setEditModalOpen] = useState(false)
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [selectCollectionModalOpen, setSelectCollectionModalOpen] = useState(false)
   const [selectedCollection, setSelectedCollection] = useState<Collection | null>(null)
+  const [collectionToDelete, setCollectionToDelete] = useState<Collection | null>(null)
   const [editingCollection, setEditingCollection] = useState<Collection | null>(null)
   const [pendingBookmark, setPendingBookmark] = useState<{ url: string; title: string } | null>(null)
+  const [actionLoading, setActionLoading] = useState(false)
 
   const [formData, setFormData] = useState({
     name: '',
@@ -32,12 +49,52 @@ export function CollectionsContent() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [collectionsRes, bookmarksRes] = await Promise.all([
-        supabase.from('collections').select('*').order('created_at', { ascending: false }),
-        supabase.from('bookmarks').select('*').order('title', { ascending: true }),
-      ])
-      if (collectionsRes.data) setCollections(collectionsRes.data)
-      if (bookmarksRes.data) setBookmarks(bookmarksRes.data)
+      // Check cache first
+      const now = Date.now()
+      if (collectionsCache.data && now - collectionsCache.timestamp < collectionsCache.CACHE_TTL) {
+        setCollections(collectionsCache.data.collections)
+        setCollectionBookmarks(collectionsCache.data.collectionBookmarks)
+        setLoading(false)
+        return
+      }
+
+      // Only fetch collections first (fast)
+      const { data: collectionsData } = await supabase
+        .from('collections')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (collectionsData) {
+        setCollections(collectionsData)
+
+        // Then fetch only first 3 bookmarks per collection for preview (in parallel)
+        const bookmarkPromises = collectionsData.map(async (collection: Collection) => {
+          const { data } = await supabase
+            .from('bookmarks')
+            .select('*')
+            .eq('collection_id', collection.id)
+            .order('created_at', { ascending: false })
+            .limit(3)
+          return { collectionId: collection.id, bookmarks: data || [] }
+        })
+
+        const results = await Promise.all(bookmarkPromises)
+        const bookmarksMap: Record<string, Bookmark[]> = {}
+        results.forEach(({ collectionId, bookmarks }) => {
+          bookmarksMap[collectionId] = bookmarks
+        })
+
+        setCollectionBookmarks(bookmarksMap)
+
+        // Cache the results
+        collectionsCache.data = {
+          collections: collectionsData,
+          collectionBookmarks: bookmarksMap
+        }
+        collectionsCache.timestamp = now
+      }
+
+      setLoading(false)
     }
     fetchData()
   }, [])
@@ -79,6 +136,10 @@ export function CollectionsContent() {
       .select()
 
     if (data) {
+      // Invalidate cache
+      collectionsCache.data = null
+      collectionsCache.timestamp = 0
+
       setCollections([data[0], ...collections])
       setModalOpen(false)
       setFormData({ name: '', description: '', is_public: false })
@@ -86,13 +147,31 @@ export function CollectionsContent() {
   }
 
   const deleteCollection = async (id: string) => {
-    if (!confirm('Delete this collection? Bookmarks will be unassigned.')) return
+    setActionLoading(true)
     await supabase.from('collections').delete().eq('id', id)
+
+    // Invalidate cache
+    collectionsCache.data = null
+    collectionsCache.timestamp = 0
+
     setCollections(collections.filter(c => c.id !== id))
+    setDeleteModalOpen(false)
+    setCollectionToDelete(null)
+    setActionLoading(false)
+  }
+
+  const openDeleteModal = (collection: Collection) => {
+    setCollectionToDelete(collection)
+    setDeleteModalOpen(true)
   }
 
   const togglePublic = async (collection: Collection) => {
     await supabase.from('collections').update({ is_public: !collection.is_public }).eq('id', collection.id)
+
+    // Invalidate cache
+    collectionsCache.data = null
+    collectionsCache.timestamp = 0
+
     setCollections(collections.map(c => c.id === collection.id ? { ...c, is_public: !c.is_public } : c))
   }
 
@@ -118,6 +197,10 @@ export function CollectionsContent() {
       .single()
 
     if (data) {
+      // Invalidate cache
+      collectionsCache.data = null
+      collectionsCache.timestamp = 0
+
       setCollections(collections.map(c => c.id === editingCollection.id ? data : c))
       setEditModalOpen(false)
       setEditingCollection(null)
@@ -127,8 +210,22 @@ export function CollectionsContent() {
 
   const addToCollection = async (bookmarkId: string, collectionId: string) => {
     await supabase.from('bookmarks').update({ collection_id: collectionId }).eq('id', bookmarkId)
+
+    // Invalidate cache
+    collectionsCache.data = null
+    collectionsCache.timestamp = 0
+
+    // Refresh available bookmarks
     const { data } = await supabase.from('bookmarks').select('*').order('title', { ascending: true })
-    if (data) setBookmarks(data)
+    if (data) setAvailableBookmarks(data)
+    // Update collection bookmarks cache
+    const bookmark = data.find((b: Bookmark) => b.id === bookmarkId)
+    if (bookmark) {
+      setCollectionBookmarks(prev => ({
+        ...prev,
+        [collectionId]: [bookmark, ...(prev[collectionId] || [])].slice(0, 3)
+      }))
+    }
     setAddModalOpen(false)
     setSelectedCollection(null)
   }
@@ -150,30 +247,41 @@ export function CollectionsContent() {
     if (existingBookmark) {
       // Update existing bookmark to this collection
       await supabase.from('bookmarks').update({ collection_id: collection.id }).eq('id', existingBookmark.id)
-      // Refresh bookmarks
-      const { data } = await supabase.from('bookmarks').select('*').order('title', { ascending: true })
-      if (data) setBookmarks(data)
+      // Refresh collection bookmarks
+      const { data } = await supabase
+        .from('bookmarks')
+        .select('*')
+        .eq('collection_id', collection.id)
+        .order('created_at', { ascending: false })
+        .limit(3)
+      if (data) {
+        setCollectionBookmarks(prev => ({ ...prev, [collection.id]: data }))
+      }
     } else {
       // Create new bookmark in this collection
-      await supabase.from('bookmarks').insert({
+      const { data } = await supabase.from('bookmarks').insert({
         user_id: user.id,
         url: pendingBookmark.url,
         title: pendingBookmark.title || new URL(pendingBookmark.url).hostname,
         collection_id: collection.id,
-        is_read: false,
+        is_read: true,
         is_favorite: false,
-      })
-      // Refresh bookmarks
-      const { data } = await supabase.from('bookmarks').select('*').order('title', { ascending: true })
-      if (data) setBookmarks(data)
+      }).select().single()
+      // Refresh collection bookmarks
+      if (data) {
+        setCollectionBookmarks(prev => ({
+          ...prev,
+          [collection.id]: [data, ...(prev[collection.id] || [])].slice(0, 3)
+        }))
+      }
     }
+
+    // Invalidate cache
+    collectionsCache.data = null
+    collectionsCache.timestamp = 0
 
     setSelectCollectionModalOpen(false)
     setPendingBookmark(null)
-  }
-
-  const getCollectionBookmarks = (collectionId: string) => {
-    return bookmarks.filter(b => b.collection_id === collectionId)
   }
 
   const shareUrl = (collection: Collection) => {
@@ -185,16 +293,63 @@ export function CollectionsContent() {
 
   return (
     <>
-      {collections.length === 0 ? (
+      {/* Search Bar - Full Width */}
+      <div className="relative">
+        <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5" style={{ color: 'var(--text-secondary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <circle cx="11" cy="11" r="8" strokeWidth={2} />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35" />
+        </svg>
+        <Input
+          placeholder="Search collections by name or description..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="pl-10"
+          style={{ paddingRight: '12px' }}
+        />
+      </div>
+
+      {/* Loading Skeleton */}
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <div key={i} className="animate-pulse">
+              <div className="h-2 mb-4 rounded" style={{ backgroundColor: 'var(--border-color)' }} />
+              <div className="p-6 rounded-lg" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+                <div className="h-6 bg-gray-300 rounded mb-2 w-3/4" />
+                <div className="h-4 bg-gray-300 rounded w-1/4 mb-4" />
+                <div className="h-4 bg-gray-300 rounded w-1/2 mb-4" />
+                <div className="flex gap-2">
+                  <div className="h-8 bg-gray-300 rounded flex-1" />
+                  <div className="h-8 bg-gray-300 rounded w-20" />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : collections.length === 0 ? (
         <Card>
           <CardContent className="p-12 text-center" style={{ color: 'var(--text-secondary)' }}>
             No collections yet. Create your first collection!
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {collections.map(collection => {
-            const collectionBookmarks = getCollectionBookmarks(collection.id)
+        <>
+          {collections.filter(collection =>
+            collection.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            (collection.description && collection.description.toLowerCase().includes(searchQuery.toLowerCase()))
+          ).length === 0 && (
+            <Card>
+              <CardContent className="p-12 text-center" style={{ color: 'var(--text-secondary)' }}>
+                No collections found matching "{searchQuery}"
+              </CardContent>
+            </Card>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {collections.filter(collection =>
+              collection.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+              (collection.description && collection.description.toLowerCase().includes(searchQuery.toLowerCase()))
+            ).map(collection => {
+            const bookmarks = collectionBookmarks[collection.id] || []
             return (
               <Card
                 key={collection.id}
@@ -226,7 +381,7 @@ export function CollectionsContent() {
                           </svg>
                         </button>
                         <button
-                          onClick={(e) => { e.stopPropagation(); deleteCollection(collection.id); }}
+                          onClick={(e) => { e.stopPropagation(); openDeleteModal(collection); }}
                           className="p-1 text-gray-400 hover:text-red-600 transition-all duration-75 active:scale-90"
                           style={{ cursor: 'pointer' }}
                           title="Delete collection"
@@ -239,11 +394,11 @@ export function CollectionsContent() {
                     </div>
 
                     <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
-                      {collectionBookmarks.length} bookmark{collectionBookmarks.length !== 1 ? 's' : ''}
+                      {bookmarks.length} bookmark{bookmarks.length !== 1 ? 's' : ''}
                     </p>
 
                     <div className="flex gap-2 flex-wrap mb-4">
-                      {collectionBookmarks.slice(0, 3).map(b => (
+                      {bookmarks.slice(0, 3).map(b => (
                         <a
                           key={b.id}
                           href={b.url}
@@ -257,8 +412,8 @@ export function CollectionsContent() {
                           {b.title}
                         </a>
                       ))}
-                      {collectionBookmarks.length > 3 && (
-                        <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>+{collectionBookmarks.length - 3} more</span>
+                      {bookmarks.length > 3 && (
+                        <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>+{bookmarks.length - 3} more</span>
                       )}
                     </div>
                   </div>
@@ -285,7 +440,17 @@ export function CollectionsContent() {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={(e) => { e.stopPropagation(); setSelectedCollection(collection); setAddModalOpen(true); }}
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        setSelectedCollection(collection)
+                        // Fetch available bookmarks on-demand
+                        const { data } = await supabase
+                          .from('bookmarks')
+                          .select('*')
+                          .order('title', { ascending: true })
+                        if (data) setAvailableBookmarks(data)
+                        setAddModalOpen(true)
+                      }}
                     >
                       + Add
                     </Button>
@@ -295,6 +460,7 @@ export function CollectionsContent() {
             )
           })}
         </div>
+        </>
       )}
 
       {/* Create Collection Modal */}
@@ -340,7 +506,7 @@ export function CollectionsContent() {
               Select a bookmark to add to <strong>{selectedCollection.name}</strong>
             </p>
             <div className="max-h-64 overflow-y-auto space-y-2">
-              {bookmarks.filter(b => b.collection_id !== selectedCollection.id).map(bookmark => (
+              {availableBookmarks.filter(b => b.collection_id !== selectedCollection.id).map(bookmark => (
                 <button
                   key={bookmark.id}
                   onClick={() => addToCollection(bookmark.id, selectedCollection.id)}
@@ -353,7 +519,7 @@ export function CollectionsContent() {
                   <p className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>{bookmark.url}</p>
                 </button>
               ))}
-              {bookmarks.filter(b => b.collection_id !== selectedCollection.id).length === 0 && (
+              {availableBookmarks.filter(b => b.collection_id !== selectedCollection.id).length === 0 && (
                 <p style={{ color: 'var(--text-secondary)' }} className="text-center py-4">No bookmarks available</p>
               )}
             </div>
@@ -451,6 +617,37 @@ export function CollectionsContent() {
         onClick={() => setModalOpen(true)}
         style={{ display: 'none' }}
       />
+
+      {/* Delete Collection Confirmation Modal */}
+      <Modal isOpen={deleteModalOpen} onClose={() => setDeleteModalOpen(false)} title="Delete Collection">
+        <div className="space-y-4">
+          <p style={{ color: 'var(--text-secondary)' }}>
+            Are you sure you want to delete <strong>"{collectionToDelete?.name}"</strong>?
+          </p>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            Bookmarks in this collection will be unassigned but not deleted.
+          </p>
+          <div className="flex gap-3 pt-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setDeleteModalOpen(false)}
+              className="flex-1"
+              disabled={actionLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => collectionToDelete && deleteCollection(collectionToDelete.id)}
+              className="flex-1 bg-red-600 hover:bg-red-700"
+              disabled={actionLoading}
+            >
+              {actionLoading ? 'Deleting...' : 'Delete Collection'}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </>
   )
 }

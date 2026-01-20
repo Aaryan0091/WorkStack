@@ -5,6 +5,7 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
 
+// POST - Insert activities (legacy, for batch sync)
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
@@ -14,10 +15,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid request' }, { status: 400 })
     }
 
-    // Use service role key to bypass RLS for extension data
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
 
-    // Insert all activities
     const { data, error } = await supabase
       .from('tab_activity')
       .insert(activities.map((a: any) => ({
@@ -43,6 +42,35 @@ export async function POST(request: NextRequest) {
   }
 }
 
+export async function DELETE(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { domain, user_id } = body
+
+    if (!domain || !user_id) {
+      return NextResponse.json({ error: 'Missing domain or user_id' }, { status: 400 })
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
+
+    const { error } = await supabase
+      .from('tab_activity')
+      .delete()
+      .eq('user_id', user_id)
+      .eq('domain', domain)
+
+    if (error) {
+      console.error('Supabase error:', error)
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
+
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    console.error('API error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
@@ -54,7 +82,6 @@ export async function GET(request: NextRequest) {
 
     const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
-    // Get today's activity for user
     const today = new Date()
     today.setHours(0, 0, 0, 0)
 
@@ -69,11 +96,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    // Calculate summary
     const totalTabs = data?.length || 0
     const totalSeconds = data?.reduce((sum, item) => sum + (item.duration_seconds || 0), 0) || 0
 
-    // Group by domain
     const domainStats: Record<string, { count: number; seconds: number }> = {}
     data?.forEach((item: any) => {
       const domain = item.domain || 'other'
@@ -92,6 +117,67 @@ export async function GET(request: NextRequest) {
         domainStats
       }
     })
+  } catch (error) {
+    console.error('API error:', error)
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+  }
+}
+
+// PUT - Upsert a tab (insert or update if exists)
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { user_id, url, title, domain, started_at } = body
+
+    if (!user_id || !url) {
+      return NextResponse.json({ error: 'Missing user_id or url' }, { status: 400 })
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
+
+    // First, check if an entry with this URL already exists for this user
+    const { data: existing } = await supabase
+      .from('tab_activity')
+      .select('*')
+      .eq('user_id', user_id)
+      .eq('url', url)
+      .maybeSingle()
+
+    if (existing) {
+      // Update the existing entry (refresh the timestamp)
+      const { error: updateError } = await supabase
+        .from('tab_activity')
+        .update({
+          title,
+          domain,
+          started_at,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existing.id)
+
+      if (updateError) {
+        return NextResponse.json({ error: updateError.message }, { status: 500 })
+      }
+      return NextResponse.json({ success: true, action: 'updated' })
+    } else {
+      // Insert new entry
+      const { error: insertError } = await supabase
+        .from('tab_activity')
+        .insert({
+          user_id,
+          url,
+          title,
+          domain,
+          duration_seconds: 0,
+          started_at,
+          ended_at: started_at
+        })
+
+      if (insertError) {
+        return NextResponse.json({ error: insertError.message }, { status: 500 })
+      }
+      return NextResponse.json({ success: true, action: 'inserted' })
+    }
   } catch (error) {
     console.error('API error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

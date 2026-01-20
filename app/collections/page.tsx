@@ -1,11 +1,13 @@
 'use client'
 
-import { Suspense } from 'react'
+import { Suspense, useState } from 'react'
 import { CollectionsContent } from './collections-content'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Button } from '@/components/ui/button'
 
 export default function CollectionsPage() {
+  const [searchQuery, setSearchQuery] = useState('')
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -35,7 +37,7 @@ export default function CollectionsPage() {
             ))}
           </div>
         }>
-          <CollectionsContent />
+          <CollectionsContent searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
         </Suspense>
       </div>
     </DashboardLayout>

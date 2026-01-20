@@ -11,6 +11,7 @@ export interface Bookmark {
   collection_id: string | null
   favicon_url: string | null
   screenshot_url: string | null
+  last_opened_at: string | null
   created_at: string
   updated_at: string
 }

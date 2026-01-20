@@ -31,6 +31,16 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Hide scrollbar globally */
+::-webkit-scrollbar {
+  display: none;
+}
+
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
 /* Reduce motion for users who prefer it */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -53,4 +63,28 @@ body {
 /* Optimize images */
 img {
   content-visibility: auto;
+}
+
+/* Custom scrollbar for tags container */
+.tags-scroll-container::-webkit-scrollbar {
+  display: block;
+  width: 4px;
+}
+
+.tags-scroll-container {
+  scrollbar-width: thin;
+  -ms-overflow-style: auto;
+}
+
+.tags-scroll-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tags-scroll-container::-webkit-scrollbar-thumb {
+  background-color: rgba(156, 163, 175, 0.5);
+  border-radius: 4px;
+}
+
+.tags-scroll-container::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(156, 163, 175, 0.7);
 }
