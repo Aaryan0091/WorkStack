@@ -1,9 +1,65 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
+// Simple validation helpers
+function isValidGuestBookmark(item: any): boolean {
+  return (
+    item &&
+    typeof item === 'object' &&
+    typeof item.url === 'string' &&
+    typeof item.title === 'string' &&
+    item.url.length > 0 &&
+    item.url.length <= 2048 &&
+    item.title.length > 0 &&
+    item.title.length <= 500
+  )
+}
+
+function isValidGuestCollection(item: any): boolean {
+  return (
+    item &&
+    typeof item === 'object' &&
+    typeof item.name === 'string' &&
+    item.name.length > 0 &&
+    item.name.length <= 200
+  )
+}
+
 export async function POST(request: NextRequest) {
   try {
     const { guestBookmarks, guestCollections } = await request.json()
+
+    // Validate input structure
+    if (guestBookmarks && !Array.isArray(guestBookmarks)) {
+      return NextResponse.json({ error: 'Invalid guestBookmarks format' }, { status: 400 })
+    }
+    if (guestCollections && !Array.isArray(guestCollections)) {
+      return NextResponse.json({ error: 'Invalid guestCollections format' }, { status: 400 })
+    }
+
+    // Validate bookmark data structure
+    if (guestBookmarks && Array.isArray(guestBookmarks)) {
+      for (let i = 0; i < guestBookmarks.length; i++) {
+        if (!isValidGuestBookmark(guestBookmarks[i])) {
+          return NextResponse.json(
+            { error: `Invalid bookmark at index ${i}` },
+            { status: 400 }
+          )
+        }
+      }
+    }
+
+    // Validate collection data structure
+    if (guestCollections && Array.isArray(guestCollections)) {
+      for (let i = 0; i < guestCollections.length; i++) {
+        if (!isValidGuestCollection(guestCollections[i])) {
+          return NextResponse.json(
+            { error: `Invalid collection at index ${i}` },
+            { status: 400 }
+          )
+        }
+      }
+    }
 
     // Get the user from the request
     const authHeader = request.headers.get('authorization')

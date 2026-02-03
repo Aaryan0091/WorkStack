@@ -10,7 +10,7 @@
  */
 
 // Known extension IDs for Chrome Web Store and production
-const PRODUCTION_EXTENSION_ID = 'llahljdmcglglkcaadldnbpcpnkdinco'
+const PRODUCTION_EXTENSION_ID = process.env.NEXT_PUBLIC_EXTENSION_ID || 'llahljdmcglglkcaadldnbpcpnkdinco'
 
 let cachedExtensionId: string | null = null
 let extensionInstalledByPostMessage = false
