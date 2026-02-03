@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { markUserSignedIn } from '@/lib/guest-storage'
 
 interface SignupFormProps {
   onToggleMode: () => void
@@ -60,6 +61,8 @@ export function SignupForm({ onToggleMode }: SignupFormProps) {
       }
 
       console.log('Signup successful!', data)
+      // Mark user as signed in so their guest data won't be cleared on close
+      markUserSignedIn()
       router.push('/')
       router.refresh()
     } catch (err: any) {

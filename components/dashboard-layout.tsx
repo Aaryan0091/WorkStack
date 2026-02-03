@@ -1,7 +1,18 @@
+'use client'
+
+import { useEffect } from 'react'
 import { Sidebar } from './sidebar'
 import { GuestSyncPrompt } from './guest-sync-prompt'
+import { setupGuestCleanup } from '@/lib/guest-storage'
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    // Setup guest cleanup listener
+    // This ensures guest data is cleared if user closes the site without signing in
+    const cleanup = setupGuestCleanup()
+    return cleanup
+  }, [])
+
   return (
     <>
       <Sidebar />

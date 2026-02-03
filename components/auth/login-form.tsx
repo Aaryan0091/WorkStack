@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { markUserSignedIn } from '@/lib/guest-storage'
 
 interface LoginFormProps {
   onToggleMode: () => void
@@ -81,6 +82,8 @@ export function LoginForm({ onToggleMode }: LoginFormProps) {
       }
 
       console.log('Login successful!', data)
+      // Mark user as signed in so their guest data won't be cleared on close
+      markUserSignedIn()
       // Use router.push instead of window.location
       router.push('/')
       router.refresh()

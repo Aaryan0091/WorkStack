@@ -5,6 +5,13 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
+import {
+  markUserSignedIn,
+  guestStoreGet,
+  guestStoreRemove,
+  GUEST_KEYS,
+  clearGuestData
+} from '@/lib/guest-storage'
 
 const SYNC_SHOWN_KEY = 'workstack_sync_prompt_shown'
 
@@ -31,12 +38,12 @@ export function GuestSyncPrompt() {
         return
       }
 
-      // Check for guest data
-      const guestBookmarks = sessionStorage.getItem('workstack_guest_bookmarks')
-      const guestCollections = sessionStorage.getItem('workstack_guest_collections')
+      // Check for guest data using localStorage
+      const guestBookmarks = guestStoreGet(GUEST_KEYS.BOOKMARKS)
+      const guestCollections = guestStoreGet(GUEST_KEYS.COLLECTIONS)
 
-      const bookmarks = guestBookmarks ? JSON.parse(guestBookmarks) : []
-      const collections = guestCollections ? JSON.parse(guestCollections) : []
+      const bookmarks = guestBookmarks || []
+      const collections = guestCollections || []
 
       // Only show if there's actual guest data
       if ((bookmarks.length > 0 || collections.length > 0)) {
@@ -52,8 +59,8 @@ export function GuestSyncPrompt() {
     setSyncing(true)
 
     try {
-      const guestBookmarks = sessionStorage.getItem('workstack_guest_bookmarks')
-      const guestCollections = sessionStorage.getItem('workstack_guest_collections')
+      const guestBookmarks = guestStoreGet(GUEST_KEYS.BOOKMARKS)
+      const guestCollections = guestStoreGet(GUEST_KEYS.COLLECTIONS)
 
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
@@ -70,8 +77,8 @@ export function GuestSyncPrompt() {
           'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
-          guestBookmarks: guestBookmarks ? JSON.parse(guestBookmarks) : [],
-          guestCollections: guestCollections ? JSON.parse(guestCollections) : [],
+          guestBookmarks: guestBookmarks || [],
+          guestCollections: guestCollections || [],
         }),
       })
 
@@ -79,10 +86,11 @@ export function GuestSyncPrompt() {
         const data = await response.json()
         setSyncResult(data.synced)
 
-        // Clear guest data from sessionStorage
-        sessionStorage.removeItem('workstack_guest_bookmarks')
-        sessionStorage.removeItem('workstack_guest_collections')
-        sessionStorage.removeItem('workstack_guest_tags')
+        // Mark user as signed in so their data won't be cleared on close
+        markUserSignedIn()
+
+        // Clear all guest data
+        clearGuestData()
 
         // Mark that we showed the prompt
         localStorage.setItem(SYNC_SHOWN_KEY, 'true')

@@ -5,6 +5,70 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
 const GROQ_API_KEY = process.env.GROQ_API_KEY!
 
+// AI API timeout (in milliseconds)
+const AI_TIMEOUT = 10000
+
+// Custom error types for better error handling
+export class AiError extends Error {
+  constructor(
+    message: string,
+    public code: 'NOT_CONFIGURED' | 'TIMEOUT' | 'RATE_LIMIT' | 'API_ERROR' | 'INVALID_RESPONSE' | 'NETWORK_ERROR'
+  ) {
+    super(message)
+    this.name = 'AiError'
+  }
+}
+
+// Fallback tag generation based on URL/title when AI fails
+function generateFallbackTags(title: string, url: string): string[] {
+  const fallbackTags: string[] = []
+
+  // Extract domain as a tag
+  try {
+    const hostname = new URL(url).hostname.replace('www.', '')
+    const domainParts = hostname.split('.')
+    if (domainParts.length >= 2) {
+      // Add the main domain (e.g., "github", "stackoverflow")
+      fallbackTags.push(domainParts[domainParts.length - 2])
+    }
+  } catch {
+    // Invalid URL, skip domain extraction
+  }
+
+  // Extract common programming languages/technologies from title
+  const techKeywords = [
+    'javascript', 'typescript', 'python', 'java', 'rust', 'go', 'php', 'ruby',
+    'react', 'vue', 'angular', 'svelte', 'next', 'nuxt',
+    'node', 'deno', 'bun', 'express', 'fastify',
+    'css', 'html', 'scss', 'tailwind', 'bootstrap',
+    'sql', 'mongodb', 'postgresql', 'mysql', 'redis',
+    'docker', 'kubernetes', 'aws', 'azure', 'gcp',
+    'api', 'rest', 'graphql', 'grpc',
+    'git', 'github', 'gitlab', 'bitbucket',
+    'linux', 'windows', 'macos', 'android', 'ios',
+    'testing', 'jest', 'vitest', 'cypress', 'playwright',
+    'tutorial', 'guide', 'docs', 'reference', 'blog', 'article'
+  ]
+
+  const titleLower = title.toLowerCase()
+  for (const keyword of techKeywords) {
+    if (titleLower.includes(keyword) && !fallbackTags.includes(keyword)) {
+      fallbackTags.push(keyword)
+      if (fallbackTags.length >= 5) break
+    }
+  }
+
+  // Add general category tags based on content clues
+  if (titleLower.includes('tutorial') || titleLower.includes('how to')) {
+    if (!fallbackTags.includes('tutorial')) fallbackTags.push('tutorial')
+  }
+  if (titleLower.includes('documentation') || titleLower.includes('docs')) {
+    if (!fallbackTags.includes('docs')) fallbackTags.push('docs')
+  }
+
+  return fallbackTags.slice(0, 5)
+}
+
 // Color palette for auto-generated tags
 export const TAG_COLORS = [
   '#3B82F6', // blue
@@ -122,17 +186,25 @@ export function getRandomColor(): string {
   return TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)]
 }
 
-// Generate AI tags using Groq
+// Generate AI tags using Groq with improved error handling and fallbacks
 export async function generateAItags(
   title: string,
   url: string,
-  description: string
+  description: string,
+  useFallback = true
 ): Promise<string[]> {
   if (!GROQ_API_KEY) {
-    throw new Error('GROQ_API_KEY is not configured')
+    if (useFallback) {
+      console.log('[AI] GROQ_API_KEY not configured, using fallback tags')
+      return generateFallbackTags(title, url)
+    }
+    throw new AiError('AI service is not configured', 'NOT_CONFIGURED')
   }
 
-  const groq = new Groq({ apiKey: GROQ_API_KEY })
+  const groq = new Groq({
+    apiKey: GROQ_API_KEY,
+    timeout: AI_TIMEOUT,
+  })
 
   const prompt = `You are a bookmark tagging assistant. Given a bookmark's title, URL, and description, suggest 3-5 relevant tags.
 
@@ -170,13 +242,45 @@ Now generate tags for the given bookmark.`
     })
 
     const content = response.choices[0]?.message?.content
-    if (!content) return []
+    if (!content) {
+      console.warn('[AI] Empty response from Groq API')
+      return useFallback ? generateFallbackTags(title, url) : []
+    }
 
     const parsed = JSON.parse(content)
-    return parsed.tags || []
-  } catch (error) {
-    console.error('Groq API error:', error)
-    return []
+    const tags = parsed.tags || []
+
+    if (tags.length === 0) {
+      console.warn('[AI] No tags returned from Groq API')
+      return useFallback ? generateFallbackTags(title, url) : []
+    }
+
+    return tags
+  } catch (error: any) {
+    // Handle different error types
+    if (error?.code === 'ETIMEDOUT' || error?.message?.includes('timeout')) {
+      console.error('[AI] Request timeout:', error.message)
+      return useFallback ? generateFallbackTags(title, url) : []
+    }
+
+    if (error?.status === 429) {
+      console.error('[AI] Rate limit exceeded')
+      return useFallback ? generateFallbackTags(title, url) : []
+    }
+
+    if (error?.status >= 500) {
+      console.error('[AI] Server error:', error?.message)
+      return useFallback ? generateFallbackTags(title, url) : []
+    }
+
+    if (error instanceof SyntaxError) {
+      console.error('[AI] Invalid JSON response:', error.message)
+      return useFallback ? generateFallbackTags(title, url) : []
+    }
+
+    // Log unknown errors
+    console.error('[AI] Unexpected error:', error)
+    return useFallback ? generateFallbackTags(title, url) : []
   }
 }
 
@@ -238,11 +342,16 @@ export async function applyAiTagsToBookmark(
   return suggested
 }
 
-// Semantic search expansion using Groq
+// Semantic search expansion using Groq with improved error handling
 export async function expandSearchQuery(query: string): Promise<string[]> {
-  if (!GROQ_API_KEY) return [query]
+  if (!GROQ_API_KEY) {
+    return basicQueryExpansion(query)
+  }
 
-  const groq = new Groq({ apiKey: GROQ_API_KEY })
+  const groq = new Groq({
+    apiKey: GROQ_API_KEY,
+    timeout: AI_TIMEOUT,
+  })
 
   const prompt = `You are a search assistant. Given a search query, expand it with 5-8 related terms and synonyms that would help find similar content.
 
@@ -270,14 +379,73 @@ Now expand this query: "${query}"`
     })
 
     const content = response.choices[0]?.message?.content
-    if (!content) return [query]
+    if (!content) {
+      return basicQueryExpansion(query)
+    }
 
     const parsed = JSON.parse(content)
-    return parsed.expanded || [query]
-  } catch (error) {
-    console.error('Groq semantic search error:', error)
-    return [query]
+    const expanded = parsed.expanded || []
+
+    if (expanded.length === 0) {
+      return basicQueryExpansion(query)
+    }
+
+    // Always include the original query first
+    return [query, ...expanded.filter((t: string) => t !== query)]
+  } catch (error: any) {
+    // Log and fall back to basic expansion
+    if (error?.code === 'ETIMEDOUT' || error?.message?.includes('timeout')) {
+      console.warn('[AI] Expansion timeout, using basic expansion')
+    } else if (error?.status === 429) {
+      console.warn('[AI] Expansion rate limited, using basic expansion')
+    } else if (error instanceof SyntaxError) {
+      console.warn('[AI] Invalid expansion response, using basic expansion')
+    } else {
+      console.warn('[AI] Expansion error:', error?.message || error)
+    }
+
+    return basicQueryExpansion(query)
   }
+}
+
+// Basic fallback expansion without AI
+function basicQueryExpansion(query: string): string[] {
+  const terms = [query.toLowerCase()]
+  const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 3)
+
+  // Add individual words for multi-word queries
+  for (const word of words) {
+    if (!terms.includes(word)) {
+      terms.push(word)
+    }
+  }
+
+  // Add common synonyms for programming terms
+  const synonyms: Record<string, string[]> = {
+    'js': ['javascript'],
+    'ts': ['typescript'],
+    'css': ['stylesheet', 'styling'],
+    'html': ['markup'],
+    'react': ['reactjs', 'react.js'],
+    'vue': ['vuejs', 'vue.js'],
+    'api': ['rest', 'endpoint', 'interface'],
+    'db': ['database', 'storage'],
+    'auth': ['authentication', 'login', 'security'],
+    'test': ['testing', 'unit test', 'integration test'],
+    'deploy': ['deployment', 'production', 'hosting'],
+  }
+
+  for (const [key, values] of Object.entries(synonyms)) {
+    if (query.toLowerCase().includes(key)) {
+      for (const synonym of values) {
+        if (!terms.includes(synonym)) {
+          terms.push(synonym)
+        }
+      }
+    }
+  }
+
+  return terms.slice(0, 8)
 }
 
 // Cleanup unused tags

@@ -20,6 +20,7 @@ const navItems: NavItem[] = [
   { href: '/collections', label: 'Collections', icon: '📦' },
   { href: '/tracked-activity', label: 'Tracked Activity', icon: '📊' },
   { href: '/smart-search', label: 'AI Smart Search', icon: '🤖' },
+  { href: '/tags', label: 'Tags', icon: '🏷️' },
 ]
 
 // Simple cache for user email to avoid repeated fetches

@@ -72,16 +72,37 @@ export async function POST(
       return corsHeaders(response)
     }
 
-    // Update last_opened_at timestamp
-    const { error: updateError } = await supabase
-      .from('bookmarks')
-      .update({ last_opened_at: new Date().toISOString() })
-      .eq('id', id)
+    // Update last_opened_at timestamp (but DON'T mark as read - user must manually mark as read)
+    let updateError = null
+    let updatedBookmark = null
+
+    try {
+      const result = await supabase
+        .from('bookmarks')
+        .update({
+          last_opened_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .eq('user_id', user.id)
+        .select()
+        .single()
+
+      updateError = result.error
+      updatedBookmark = result.data
+    } catch (e) {
+      updateError = e
+    }
 
     if (updateError) {
-      console.error('Update error:', updateError)
-      const response = NextResponse.json({ error: updateError.message }, { status: 500 })
-      return corsHeaders(response)
+      // Check if it's because column doesn't exist
+      const errorCode = (updateError as any).code
+      const errorMessage = (updateError as any).message || String(updateError)
+      if (errorCode === '42703' || errorMessage.includes('column') || errorMessage.includes('last_opened_at')) {
+        // Column doesn't exist, but that's okay - the bookmark was still "opened"
+      } else {
+        const response = NextResponse.json({ error: errorMessage }, { status: 500 })
+        return corsHeaders(response)
+      }
     }
 
     const response = NextResponse.json({ success: true })

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef, useMemo, memo, useTransition, startTransition } from 'react'
+import { useEffect, useState, useRef, useMemo, useTransition, startTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
@@ -9,220 +9,14 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { BookmarkMenu } from '@/components/bookmark-menu'
+import { ChartWithToggle, type ChartData } from '@/components/dashboard/charts'
 import type { Bookmark, Collection } from '@/lib/types'
-
-// Memoized Pie Chart component
-interface PieChartProps {
-  data: { label: string; value: number; color: string }[]
-}
-
-const PieChart = memo(function PieChart({ data }: PieChartProps) {
-  const total = data.reduce((sum, item) => sum + item.value, 0)
-  const size = 160
-  const strokeWidth = 22
-  const radius = (size - strokeWidth) / 2
-  const center = size / 2
-  const containerHeight = 160
-
-  let currentAngle = 0
-
-  const getCoordinates = (angle: number) => {
-    const radians = (angle - 90) * (Math.PI / 180)
-    return {
-      x: center + radius * Math.cos(radians),
-      y: center + radius * Math.sin(radians),
-    }
-  }
-
-  const slices = useMemo(() => data.map((item) => {
-    if (item.value === 0) return null
-    const percentage = (item.value / total) * 100
-    const angle = (item.value / total) * 360
-
-    const start = getCoordinates(currentAngle)
-    const end = getCoordinates(currentAngle + angle)
-    const largeArc = angle > 180 ? 1 : 0
-
-    currentAngle += angle
-
-    // If it's a full circle (100%)
-    if (percentage === 100) {
-      return (
-        <circle
-          key={item.label}
-          cx={center}
-          cy={center}
-          r={radius}
-          fill="none"
-          stroke={item.color}
-          strokeWidth={strokeWidth}
-          style={{ filter: 'drop-shadow(0 0 6px ' + item.color + '50)' }}
-        />
-      )
-    }
-
-    return (
-      <path
-        key={item.label}
-        d={`M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} 1 ${end.x} ${end.y}`}
-        fill="none"
-        stroke={item.color}
-        strokeWidth={strokeWidth}
-        strokeLinecap="round"
-        style={{ filter: 'drop-shadow(0 0 6px ' + item.color + '50)' }}
-      />
-    )
-  }), [data, total, radius, center, strokeWidth])
-
-  return (
-    <div className="flex items-center gap-5" style={{ height: containerHeight }}>
-      <div className="relative" style={{ width: size, height: size }}>
-        {/* Subtle glow behind */}
-        <div
-          className="absolute inset-0 rounded-full blur-xl opacity-20"
-          style={{
-            background: 'linear-gradient(135deg, #3b82f6, #a855f7, #f97316)',
-            transform: 'scale(0.7)'
-          }}
-        />
-        <svg width={size} height={size} className="flex-shrink-0 relative">
-          {slices}
-          <text
-            x={center}
-            y={center}
-            textAnchor="middle"
-            dominantBaseline="middle"
-            className="text-xl font-bold"
-            style={{ fill: 'var(--text-primary)' }}
-          >
-            {total}
-          </text>
-        </svg>
-      </div>
-      <div className="space-y-2">
-        {data.map((item) => (
-          <div key={item.label} className="flex items-center gap-2">
-            <div
-              className="w-3 h-3 rounded-full flex-shrink-0"
-              style={{
-                backgroundColor: item.color,
-                boxShadow: '0 0 8px ' + item.color + '50',
-              }}
-            />
-            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-              <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{item.label}</span>: <strong style={{ color: 'var(--text-primary)' }}>{item.value}</strong>
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-})
-
-// Memoized Bar Chart component
-const BarChart = memo(function BarChart({ data }: PieChartProps) {
-  const maxValue = useMemo(() => Math.max(...data.map(d => d.value), 1), [data])
-  const barWidth = 32
-  const chartHeight = 120
-  const gap = 12
-  const containerHeight = 160
-
-  return (
-    <div className="flex items-center gap-5" style={{ height: containerHeight }}>
-      <div className="relative flex items-end" style={{ width: barWidth * data.length + gap * (data.length - 1) + 40, height: containerHeight }}>
-        <svg width="100%" height="100%" className="flex-shrink-0 relative" style={{ overflow: 'visible' }}>
-          {data.map((item, index) => {
-            const barHeight = (item.value / maxValue) * chartHeight
-            const x = index * (barWidth + gap) + 20
-            const y = containerHeight - 20 - barHeight
-
-            return (
-              <g key={item.label}>
-                {/* Bar */}
-                <rect
-                  x={x}
-                  y={y}
-                  width={barWidth}
-                  height={barHeight}
-                  fill={item.color}
-                  rx={4}
-                  style={{ filter: 'drop-shadow(0 0 6px ' + item.color + '50)' }}
-                />
-                {/* Value on top */}
-                <text
-                  x={x + barWidth / 2}
-                  y={y - 5}
-                  textAnchor="middle"
-                  className="text-xs font-bold"
-                  style={{ fill: 'var(--text-primary)' }}
-                >
-                  {item.value}
-                </text>
-              </g>
-            )
-          })}
-        </svg>
-      </div>
-      <div className="space-y-2">
-        {data.map((item) => (
-          <div key={item.label} className="flex items-center gap-2">
-            <div
-              className="w-3 h-3 rounded-sm flex-shrink-0"
-              style={{
-                backgroundColor: item.color,
-                boxShadow: '0 0 8px ' + item.color + '50',
-              }}
-            />
-            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-              <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{item.label}</span>
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-})
-
-// Memoized Chart Container with toggle button
-interface ChartWithToggleProps {
-  data: { label: string; value: number; color: string }[]
-}
-
-const ChartWithToggle = memo(function ChartWithToggle({ data }: ChartWithToggleProps) {
-  const [chartType, setChartType] = useState<'pie' | 'bar'>('pie')
-
-  return (
-    <div className="flex flex-col items-center gap-3">
-      {chartType === 'pie' ? <PieChart data={data} /> : <BarChart data={data} />}
-      <button
-        onClick={() => setChartType(chartType === 'pie' ? 'bar' : 'pie')}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-75 active:scale-90"
-        style={{
-          backgroundColor: 'var(--bg-secondary)',
-          color: 'var(--text-secondary)',
-          cursor: 'pointer'
-        }}
-      >
-        {chartType === 'pie' ? (
-          <>
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-            </svg>
-            Bar Chart
-          </>
-        ) : (
-          <>
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z" />
-            </svg>
-            Pie Chart
-          </>
-        )}
-      </button>
-    </div>
-  )
-})
+import {
+  guestStoreGet,
+  guestStoreSet,
+  GUEST_KEYS,
+  markGuestMode
+} from '@/lib/guest-storage'
 
 export function DashboardContent({ initialBookmarks, initialCollections, initialStats }: { initialBookmarks: Bookmark[]; initialCollections: Collection[]; initialStats: { totalBookmarks: number; favoritesCount: number; unreadCount: number } }) {
   const router = useRouter()
@@ -256,6 +50,11 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     duration_seconds: number
   }>>([])
   const checkIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const initTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const statusCheckTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const tokenSyncTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const extensionCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const stopTrackingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isPollingRef = useRef(false) // Track if polling is already active
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
 
@@ -273,21 +72,21 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     // Get user token for API call
     const { data: { user }, error: userError } = await supabase.auth.getUser()
     if (userError || !user) {
-      // Guest mode - load from sessionStorage
+      // Guest mode - load from localStorage
+      markGuestMode()
       try {
-        const storedBookmarks = sessionStorage.getItem('workstack_guest_bookmarks')
-        const storedCollections = sessionStorage.getItem('workstack_guest_collections')
+        const storedBookmarks = guestStoreGet(GUEST_KEYS.BOOKMARKS)
+        const storedCollections = guestStoreGet(GUEST_KEYS.COLLECTIONS)
         if (storedBookmarks) {
-          const parsedBookmarks = JSON.parse(storedBookmarks)
-          setBookmarks(parsedBookmarks.slice(0, 5))
+          setBookmarks(storedBookmarks.slice(0, 5))
           setCounts({
-            totalBookmarks: parsedBookmarks.length,
-            favoritesCount: parsedBookmarks.filter((b: Bookmark) => b.is_favorite).length,
-            unreadCount: parsedBookmarks.filter((b: Bookmark) => !b.is_read).length,
+            totalBookmarks: storedBookmarks.length,
+            favoritesCount: storedBookmarks.filter((b: Bookmark) => b.is_favorite).length,
+            unreadCount: storedBookmarks.filter((b: Bookmark) => !b.is_read).length,
           })
         }
         if (storedCollections) {
-          setCollections(JSON.parse(storedCollections))
+          setCollections(storedCollections)
         }
       } catch (e) {
         console.error('Error loading guest data:', e)
@@ -352,7 +151,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     window.addEventListener('workstack-extension-loaded', handleExtensionLoaded)
 
     // Defer extension detection to not block initial render
-    const initTimer = setTimeout(async () => {
+    initTimerRef.current = setTimeout(async () => {
       console.log('[Dashboard] initTimer fired')
       // Also check immediately (in case content script already ran)
       if (isExtensionInstalledViaContentScript()) {
@@ -361,7 +160,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         const extensionId = getExtensionId()
         if (extensionId) {
           // Delay status check slightly
-          setTimeout(() => {
+          statusCheckTimerRef.current = setTimeout(() => {
             console.log('[Dashboard] Starting poll from content script detection')
             // Clear any existing interval before starting a new one
             if (checkIntervalRef.current) {
@@ -438,20 +237,35 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     })
 
     return () => {
-      console.log('[Dashboard] useEffect cleanup - clearing interval')
-      clearTimeout(initTimer)
-      if (handlerRef.current) {
-        window.removeEventListener('workstack-extension-loaded', handlerRef.current)
-      }
+      console.log('[Dashboard] useEffect cleanup - clearing all timers and intervals')
+      // Clear all timeouts
+      if (initTimerRef.current) clearTimeout(initTimerRef.current)
+      if (statusCheckTimerRef.current) clearTimeout(statusCheckTimerRef.current)
+      if (tokenSyncTimeoutRef.current) clearTimeout(tokenSyncTimeoutRef.current)
+      if (extensionCheckTimeoutRef.current) clearTimeout(extensionCheckTimeoutRef.current)
+      if (stopTrackingTimeoutRef.current) clearTimeout(stopTrackingTimeoutRef.current)
+
+      // Clear interval
       if (checkIntervalRef.current) {
         clearInterval(checkIntervalRef.current)
         checkIntervalRef.current = null
-        console.log('[Dashboard] Interval cleared')
       }
+
+      // Remove event listener
+      if (handlerRef.current) {
+        window.removeEventListener('workstack-extension-loaded', handlerRef.current)
+      }
+
+      // Unsubscribe from auth changes
       subscription.unsubscribe()
+
+      // Remove Supabase channel
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current)
+        channelRef.current = null
       }
+
+      console.log('[Dashboard] All cleanup complete')
     }
   }, [])
 
@@ -464,7 +278,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     if (!extensionId) return
 
     let responded = false
-    const timeout = setTimeout(() => {
+    tokenSyncTimeoutRef.current = setTimeout(() => {
       if (!responded) {
         responded = true
         console.log('Extension token sync: timeout (extension not installed)')
@@ -478,7 +292,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     }, (response: any) => {
       if (responded) return
       responded = true
-      clearTimeout(timeout)
+      if (tokenSyncTimeoutRef.current) clearTimeout(tokenSyncTimeoutRef.current)
 
       if (chrome.runtime.lastError) {
         console.log('Extension not reachable')
@@ -535,7 +349,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
     // Verify the extension actually responds
     let responded = false
-    const timeout = setTimeout(() => {
+    extensionCheckTimeoutRef.current = setTimeout(() => {
       if (!responded) {
         responded = true
         console.log('Extension check: timeout - extension not responding')
@@ -546,7 +360,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     chrome.runtime.sendMessage(extensionId, { action: 'ping' }, (response: any) => {
       if (responded) return
       responded = true
-      clearTimeout(timeout)
+      if (extensionCheckTimeoutRef.current) clearTimeout(extensionCheckTimeoutRef.current)
 
       if (chrome.runtime.lastError) {
         console.log('Extension check: error -', chrome.runtime.lastError.message)
@@ -577,7 +391,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         setIsPaused(response.isPaused || false)
         setHasSavedSession(response.hasSavedSession || false)
         if (response.sessionTabs) {
-          console.log('[Dashboard] Received tabs:', response.sessionTabs.length, response.sessionTabs.map(t => t.url))
+          console.log('[Dashboard] Received tabs:', response.sessionTabs.length, response.sessionTabs.map((t: any) => t.url))
           setSessionTabs(response.sessionTabs)
         }
       } else {
@@ -646,7 +460,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         setIsTracking(false)
         setIsPaused(false)
         setSessionTabs([])
-        setTimeout(() => checkExtensionStatus(), 100)
+        stopTrackingTimeoutRef.current = setTimeout(() => checkExtensionStatus(), 100)
       }
     })
   }
@@ -725,15 +539,14 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     if (isGuest) {
       const updated = bookmarks.map(b => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b)
       setBookmarks(updated)
-      // Save to sessionStorage
+      // Save to localStorage
       try {
-        const stored = sessionStorage.getItem('workstack_guest_bookmarks')
+        const stored = guestStoreGet(GUEST_KEYS.BOOKMARKS)
         if (stored) {
-          const allBookmarks = JSON.parse(stored)
-          const updatedAll = allBookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b)
-          sessionStorage.setItem('workstack_guest_bookmarks', JSON.stringify(updatedAll))
+          const updatedAll = stored.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b)
+          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
         }
-      } catch (e) { console.error('Error saving to sessionStorage:', e) }
+      } catch (e) { console.error('Error saving to localStorage:', e) }
       fetchFreshData()
       return
     }
@@ -746,15 +559,14 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     if (isGuest) {
       const updated = bookmarks.map(b => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b)
       setBookmarks(updated)
-      // Save to sessionStorage
+      // Save to localStorage
       try {
-        const stored = sessionStorage.getItem('workstack_guest_bookmarks')
+        const stored = guestStoreGet(GUEST_KEYS.BOOKMARKS)
         if (stored) {
-          const allBookmarks = JSON.parse(stored)
-          const updatedAll = allBookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b)
-          sessionStorage.setItem('workstack_guest_bookmarks', JSON.stringify(updatedAll))
+          const updatedAll = stored.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b)
+          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
         }
-      } catch (e) { console.error('Error saving to sessionStorage:', e) }
+      } catch (e) { console.error('Error saving to localStorage:', e) }
       fetchFreshData()
       return
     }
@@ -766,15 +578,14 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const deleteBookmark = async (id: string) => {
     if (isGuest) {
       setBookmarks(bookmarks.filter(b => b.id !== id))
-      // Save to sessionStorage
+      // Save to localStorage
       try {
-        const stored = sessionStorage.getItem('workstack_guest_bookmarks')
+        const stored = guestStoreGet(GUEST_KEYS.BOOKMARKS)
         if (stored) {
-          const allBookmarks = JSON.parse(stored)
-          const updatedAll = allBookmarks.filter((b: Bookmark) => b.id !== id)
-          sessionStorage.setItem('workstack_guest_bookmarks', JSON.stringify(updatedAll))
+          const updatedAll = stored.filter((b: Bookmark) => b.id !== id)
+          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
         }
-      } catch (e) { console.error('Error saving to sessionStorage:', e) }
+      } catch (e) { console.error('Error saving to localStorage:', e) }
       fetchFreshData()
       return
     }

@@ -1,14 +1,12 @@
 import React from 'react'
 
-interface CardProps {
+interface CardProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'className'> {
   children: React.ReactNode
   className?: string
   style?: React.CSSProperties
-  onClick?: () => void
-  onMouseEnter?: () => void
 }
 
-export function Card({ children, className = '', style, onClick, onMouseEnter }: CardProps) {
+export function Card({ children, className = '', style, ...props }: CardProps) {
   return (
     <div
       className={`rounded-lg shadow-sm border ${className}`}
@@ -17,8 +15,7 @@ export function Card({ children, className = '', style, onClick, onMouseEnter }:
         borderColor: 'var(--border-color)',
         ...style
       }}
-      onClick={onClick}
-      onMouseEnter={onMouseEnter}
+      {...props}
     >
       {children}
     </div>

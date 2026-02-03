@@ -41,8 +41,6 @@ async function getUserFromToken(authHeader: string | null) {
 // POST - Get semantically related bookmarks
 export async function POST(request: NextRequest) {
   try {
-    console.log('Recommendation API called')
-
     // Check if AI is configured
     if (!GROQ_API_KEY) {
       console.error('GROQ_API_KEY is not set')
@@ -57,12 +55,9 @@ export async function POST(request: NextRequest) {
     const authHeader = request.headers.get('Authorization')
     const user = await getUserFromToken(authHeader)
     if (!user) {
-      console.error('User not authenticated')
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       return corsHeaders(response)
     }
-
-    console.log('Recommendation: User authenticated:', user.id)
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
 
@@ -81,8 +76,6 @@ export async function POST(request: NextRequest) {
       return corsHeaders(response)
     }
 
-    console.log('Recommendation: Reading list items:', readingList?.length || 0)
-
     if (!readingList || readingList.length === 0) {
       const response = NextResponse.json({ recommendations: [] })
       return corsHeaders(response)
@@ -96,23 +89,33 @@ export async function POST(request: NextRequest) {
     // 3. Use AI to find related topics/terms
     const groq = new Groq({ apiKey: GROQ_API_KEY })
 
-    const prompt = `You are a recommendation engine. Based on the user's current reading list, suggest 3-5 search queries that would find related content they might be interested in.
+    const prompt = `You are a recommendation engine. Extract 3-5 search queries from the user's reading list that would help find semantically similar content.
 
 Current Reading List:
 ${contextText}
 
-Guidelines:
+CRITICAL GUIDELINES:
 1. Return ONLY a JSON object with a "queries" array
-2. Queries should be specific topics, technologies, or themes
+2. Extract meaningful keywords: movie names, song titles, topics, people, or themes
 3. Keep queries to 1-3 words each
-4. Focus on extracting the main themes from the reading list
+4. Split compound titles: If you see "dhurandar title track", extract BOTH "dhurandar" AND "title track"
+5. Extract proper nouns, names, and unique identifiers
+6. If you see a pipe character (|), split on it: "song | movie" becomes ["song", "movie"]
+7. Common words to ignore: "the", "a", "an", "in", "on", "at", "for", "video", "youtube", "watch"
 
-Example output:
-{
-  "queries": ["react hooks", "frontend performance", "state management"]
-}
+Example 1 - Single item with multiple parts:
+Input: "dhurandar title track"
+Output: { "queries": ["dhurandar", "title track"] }
 
-Now generate queries for this reading list:`
+Example 2 - Movie/song with separator:
+Input: "shararat | dhurandar"
+Output: { "queries": ["shararat", "dhurandar"] }
+
+Example 3 - Multiple related items:
+Input: "Movie Name - Part 1", "Movie Name - Part 2"
+Output: { "queries": ["Movie Name", "Part 1", "Part 2"] }
+
+Now extract queries from this reading list:`
 
     try {
       const aiResponse = await groq.chat.completions.create({
@@ -139,8 +142,6 @@ Now generate queries for this reading list:`
 
       // 4. Search for bookmarks matching these queries (excluding current reading list)
       const readingListIds = readingList.map(b => b.id)
-      console.log('Recommendation: Reading list IDs:', readingListIds)
-      console.log('Recommendation: AI queries:', queries)
 
       // Get all other bookmarks (filter in JS to avoid Supabase syntax issues)
       const { data: allBookmarks } = await supabase
@@ -150,7 +151,6 @@ Now generate queries for this reading list:`
 
       // Filter out reading list items
       const otherBookmarks = (allBookmarks || []).filter((b: any) => !readingListIds.includes(b.id))
-      console.log('Recommendation: Other bookmarks count:', otherBookmarks.length)
 
       // Score bookmarks based on query matches
       const scoredBookmarks = otherBookmarks.map((bookmark: any) => {
@@ -175,11 +175,6 @@ Now generate queries for this reading list:`
         .sort((a: any, b: any) => b._score - a._score)
         .slice(0, 6)
         .map(({ _score, ...bookmark }) => bookmark)
-
-      console.log('Recommendation: Final recommendations count:', recommendations.length)
-      if (recommendations.length > 0) {
-        console.log('Recommendation: Sample:', recommendations[0]?.title)
-      }
 
       const response = NextResponse.json({
         recommendations,

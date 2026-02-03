@@ -14,8 +14,6 @@ interface Props {
   collectionId: string
 }
 
-type AddModalTab = 'existing' | 'new'
-
 export function CollectionDetailContent({ collectionId }: Props) {
   const router = useRouter()
   const [collection, setCollection] = useState<Collection | null>(null)
@@ -28,37 +26,34 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const [editFormData, setEditFormData] = useState({ name: '', description: '', is_public: false })
   const [formData, setFormData] = useState({ url: '', title: '' })
   const [formError, setFormError] = useState('')
-  const [addModalTab, setAddModalTab] = useState<AddModalTab>('existing')
   const [availableBookmarks, setAvailableBookmarks] = useState<Bookmark[]>([])
   const [availableBookmarksLoading, setAvailableBookmarksLoading] = useState(false)
   const [bookmarkSearchQuery, setBookmarkSearchQuery] = useState('')
+  const [collectionSearchQuery, setCollectionSearchQuery] = useState('')
   const [selectedBookmarkIds, setSelectedBookmarkIds] = useState<Set<string>>(new Set())
   const [selectionMode, setSelectionMode] = useState(false)
+  const [showNewBookmarkForm, setShowNewBookmarkForm] = useState(false)
+  const [newBookmarkUrl, setNewBookmarkUrl] = useState('')
+  const [newBookmarkTitle, setNewBookmarkTitle] = useState('')
+  const [bookmarkFilterType, setBookmarkFilterType] = useState<'all' | 'favorites' | 'reading-list'>('all')
 
   useEffect(() => {
     fetchData()
-
-    // Poll every 2 seconds to keep data in sync with changes from other pages
-    const pollInterval = setInterval(fetchData, 2000)
-
-    return () => clearInterval(pollInterval)
   }, [collectionId])
 
   // Fetch available bookmarks when modal opens
   useEffect(() => {
     if (addModalOpen) {
       fetchAvailableBookmarks()
-      setAddModalTab('existing') // Reset to existing tab
       setFormError('')
       setBookmarkSearchQuery('') // Reset search
+      setShowNewBookmarkForm(false)
+      setNewBookmarkUrl('')
+      setNewBookmarkTitle('')
+      setSelectedBookmarkIds(new Set())
+      setBookmarkFilterType('all')
     }
   }, [addModalOpen])
-
-  // Filter bookmarks by search query
-  const filteredBookmarks = availableBookmarks.filter(b =>
-    b.title.toLowerCase().includes(bookmarkSearchQuery.toLowerCase()) ||
-    b.url.toLowerCase().includes(bookmarkSearchQuery.toLowerCase())
-  )
 
   const fetchAvailableBookmarks = async () => {
     setAvailableBookmarksLoading(true)
@@ -90,18 +85,127 @@ export function CollectionDetailContent({ collectionId }: Props) {
   }
 
   const addExistingToCollection = async (bookmark: Bookmark) => {
-    // Optimistically update UI immediately
-    setBookmarks([bookmark, ...bookmarks])
-    setAddModalOpen(false)
-    setActionLoading(false)
+    setActionLoading(true)
 
-    // Do database operation in background
-    supabase
+    // Add to collection via junction table
+    const { error } = await supabase
       .from('collection_bookmarks')
       .insert({
         collection_id: collectionId,
         bookmark_id: bookmark.id
       })
+
+    if (error) {
+      console.error('Failed to add bookmark to collection:', error)
+      setActionLoading(false)
+      return
+    }
+
+    // Refresh data to ensure consistency
+    await fetchData()
+
+    setAddModalOpen(false)
+    setActionLoading(false)
+  }
+
+  const addToCollection = async (bookmarkIds: Set<string>, collectionIdToAdd: string) => {
+    setActionLoading(true)
+
+    // Add all selected bookmarks to collection via junction table
+    const inserts = Array.from(bookmarkIds).map(bookmarkId =>
+      supabase
+        .from('collection_bookmarks')
+        .insert({
+          collection_id: collectionIdToAdd,
+          bookmark_id: bookmarkId
+        })
+    )
+
+    await Promise.all(inserts)
+
+    // Refresh data
+    await fetchData()
+    await fetchAvailableBookmarks()
+
+    setSelectedBookmarkIds(new Set())
+    setAddModalOpen(false)
+    setActionLoading(false)
+  }
+
+  const createAndAddBookmark = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setFormError('')
+
+    if (!newBookmarkUrl.trim()) {
+      setFormError('URL is required')
+      return
+    }
+
+    try {
+      new URL(newBookmarkUrl)
+    } catch {
+      setFormError('Invalid URL')
+      return
+    }
+
+    setActionLoading(true)
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      router.push('/login')
+      return
+    }
+
+    // Create new bookmark with is_read: true so it doesn't appear in reading list
+    const { data } = await supabase
+      .from('bookmarks')
+      .insert({
+        user_id: user.id,
+        url: newBookmarkUrl,
+        title: newBookmarkTitle || new URL(newBookmarkUrl).hostname,
+        is_read: true,
+        is_favorite: false,
+      })
+      .select()
+      .single()
+
+    if (!data) {
+      setActionLoading(false)
+      setFormError('Failed to create bookmark')
+      return
+    }
+
+    // Add to collection via junction table
+    const { error } = await supabase
+      .from('collection_bookmarks')
+      .insert({
+        collection_id: collectionId,
+        bookmark_id: data.id
+      })
+
+    if (error) {
+      setActionLoading(false)
+      setFormError('Failed to add to collection')
+      return
+    }
+
+    // Refresh data
+    await fetchData()
+    await fetchAvailableBookmarks()
+
+    setNewBookmarkUrl('')
+    setNewBookmarkTitle('')
+    setShowNewBookmarkForm(false)
+    setAddModalOpen(false)
+    setActionLoading(false)
+  }
+
+  const getDomain = (url: string) => {
+    try {
+      return new URL(url).hostname
+    } catch {
+      return url
+    }
   }
 
   const fetchData = async () => {
@@ -336,13 +440,14 @@ export function CollectionDetailContent({ collectionId }: Props) {
     }
   }
 
-  const getDomain = (url: string) => {
-    try {
-      return new URL(url).hostname
-    } catch {
-      return url
-    }
-  }
+  // Filter bookmarks by search query
+  const filteredBookmarks = collectionSearchQuery
+    ? bookmarks.filter(b =>
+        b.title?.toLowerCase().includes(collectionSearchQuery.toLowerCase()) ||
+        b.url?.toLowerCase().includes(collectionSearchQuery.toLowerCase()) ||
+        b.description?.toLowerCase().includes(collectionSearchQuery.toLowerCase())
+      )
+    : bookmarks
 
   const toggleBookmarkSelection = (bookmarkId: string) => {
     const newSelection = new Set(selectedBookmarkIds)
@@ -427,6 +532,62 @@ export function CollectionDetailContent({ collectionId }: Props) {
     setSelectionMode(false)
   }
 
+  const bulkRemoveSelected = async () => {
+    if (selectedBookmarkIds.size === 0) return
+
+    setActionLoading(true)
+
+    // Remove all selected bookmarks from collection
+    for (const bookmarkId of selectedBookmarkIds) {
+      await supabase
+        .from('collection_bookmarks')
+        .delete()
+        .eq('collection_id', collectionId)
+        .eq('bookmark_id', bookmarkId)
+    }
+
+    // Refresh data
+    await fetchData()
+
+    setSelectedBookmarkIds(new Set())
+    setSelectionMode(false)
+    setActionLoading(false)
+  }
+
+  const bulkMarkAsRead = async () => {
+    if (selectedBookmarkIds.size === 0) return
+
+    const idsArray = Array.from(selectedBookmarkIds)
+
+    // Update in database
+    await supabase
+      .from('bookmarks')
+      .update({ is_read: true })
+      .in('id', idsArray)
+
+    // Update local state
+    setBookmarks(prev => prev.map(b =>
+      idsArray.includes(b.id) ? { ...b, is_read: true } : b
+    ))
+  }
+
+  const bulkMarkAsUnread = async () => {
+    if (selectedBookmarkIds.size === 0) return
+
+    const idsArray = Array.from(selectedBookmarkIds)
+
+    // Update in database
+    await supabase
+      .from('bookmarks')
+      .update({ is_read: false })
+      .in('id', idsArray)
+
+    // Update local state
+    setBookmarks(prev => prev.map(b =>
+      idsArray.includes(b.id) ? { ...b, is_read: false } : b
+    ))
+  }
+
   if (loading) {
     return null // Suspense will show the loader
   }
@@ -451,14 +612,37 @@ export function CollectionDetailContent({ collectionId }: Props) {
             </Button>
           </div>
 
-          <div className="flex gap-2 flex-shrink-0">
+          <div className="flex gap-2 flex-shrink-0 flex-wrap">
             {selectionMode && selectedBookmarkIds.size > 0 && (
-              <Button
-                onClick={openSelectedTabs}
-                style={{ backgroundColor: '#22c55e', color: 'white' }}
-              >
-                Open Selected ({selectedBookmarkIds.size})
-              </Button>
+              <>
+                <Button
+                  onClick={openSelectedTabs}
+                  style={{ backgroundColor: '#22c55e', color: 'white' }}
+                >
+                  Open Selected ({selectedBookmarkIds.size})
+                </Button>
+                <Button
+                  onClick={bulkMarkAsRead}
+                  variant="secondary"
+                  style={{ backgroundColor: '#3b82f6', color: 'white' }}
+                >
+                  ✓ Mark as Read
+                </Button>
+                <Button
+                  onClick={bulkMarkAsUnread}
+                  variant="secondary"
+                  style={{ backgroundColor: '#8b5cf6', color: 'white' }}
+                >
+                  ○ Mark as Unread
+                </Button>
+                <Button
+                  onClick={bulkRemoveSelected}
+                  variant="secondary"
+                  style={{ backgroundColor: '#fecaca', color: '#dc2626' }}
+                >
+                  Remove Selected
+                </Button>
+              </>
             )}
             {!selectionMode && (
               <>
@@ -538,6 +722,30 @@ export function CollectionDetailContent({ collectionId }: Props) {
         </div>
       </div>
 
+      {/* Search Bar */}
+      {bookmarks.length > 0 && (
+        <div className="relative">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5" style={{ color: 'var(--text-secondary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r={8} strokeWidth={2} />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35" />
+          </svg>
+          <Input
+            placeholder="Search bookmarks in this collection..."
+            value={collectionSearchQuery}
+            onChange={(e) => setCollectionSearchQuery(e.target.value)}
+            className="pl-10"
+          />
+          {collectionSearchQuery && (
+            <button
+              onClick={() => setCollectionSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Bookmarks List */}
       {bookmarks.length === 0 ? (
         <Card>
@@ -549,9 +757,23 @@ export function CollectionDetailContent({ collectionId }: Props) {
             </Button>
           </CardContent>
         </Card>
+      ) : filteredBookmarks.length === 0 ? (
+        <Card>
+          <CardContent className="p-12 text-center" style={{ color: 'var(--text-secondary)' }}>
+            No bookmarks match "{collectionSearchQuery}"
+            <br />
+            <button
+              onClick={() => setCollectionSearchQuery('')}
+              className="mt-4 px-4 py-2 rounded-lg text-sm"
+              style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)', cursor: 'pointer' }}
+            >
+              Clear Search
+            </button>
+          </CardContent>
+        </Card>
       ) : (
         <div className="space-y-3">
-          {bookmarks.map(bookmark => {
+          {filteredBookmarks.map(bookmark => {
             const isSelected = selectedBookmarkIds.has(bookmark.id)
             return (
               <div key={bookmark.id} className="block">
@@ -657,157 +879,227 @@ export function CollectionDetailContent({ collectionId }: Props) {
       )}
 
       {/* Add Bookmark Modal */}
-      <Modal isOpen={addModalOpen} onClose={() => { setAddModalOpen(false); setFormError('') }} title="Add to Collection">
+      <Modal isOpen={addModalOpen} onClose={() => { setAddModalOpen(false); setShowNewBookmarkForm(false); setNewBookmarkUrl(''); setNewBookmarkTitle(''); setSelectedBookmarkIds(new Set()); setBookmarkFilterType('all'); setBookmarkSearchQuery(''); }} title="Add Bookmark">
         <div className="space-y-4">
-          {/* Tabs */}
+          {/* Main Tabs: Create New / Select from Existing */}
           <div className="flex gap-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
             <button
-              onClick={() => setAddModalTab('existing')}
-              className={`px-4 py-2 text-sm font-medium transition-colors ${
-                addModalTab === 'existing'
-                  ? 'border-b-2 border-blue-600 text-blue-600'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-              style={{ cursor: 'pointer' }}
+              onClick={() => setShowNewBookmarkForm(true)}
+              className={`flex-1 py-2 text-sm font-medium transition-all ${showNewBookmarkForm ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-400'}`}
+              style={{ color: showNewBookmarkForm ? '#8b5cf6' : 'var(--text-secondary)', cursor: 'pointer' }}
             >
-              From Existing Bookmarks
+              Create New
             </button>
             <button
-              onClick={() => setAddModalTab('new')}
-              className={`px-4 py-2 text-sm font-medium transition-colors ${
-                addModalTab === 'new'
-                  ? 'border-b-2 border-blue-600 text-blue-600'
-                  : 'text-gray-500 hover:text-gray-700'
-              }`}
-              style={{ cursor: 'pointer' }}
+              onClick={() => setShowNewBookmarkForm(false)}
+              className={`flex-1 py-2 text-sm font-medium transition-all ${!showNewBookmarkForm ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-400'}`}
+              style={{ color: !showNewBookmarkForm ? '#8b5cf6' : 'var(--text-secondary)', cursor: 'pointer' }}
             >
-              Create New Bookmark
+              Select from Existing
             </button>
           </div>
 
-          {/* Existing Bookmarks Tab */}
-          {addModalTab === 'existing' && (
-            <div>
-              <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
-                Select a bookmark to add to <strong>{collection?.name}</strong>
-              </p>
+          {!showNewBookmarkForm ? (
+            <>
+              {/* Filter Tabs: All / Favorites / Reading List */}
+              <div className="flex gap-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
+                <button
+                  onClick={() => setBookmarkFilterType('all')}
+                  className={`flex-1 py-2 text-sm font-medium transition-all ${bookmarkFilterType === 'all' ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-400'}`}
+                  style={{ color: bookmarkFilterType === 'all' ? '#8b5cf6' : 'var(--text-secondary)', cursor: 'pointer' }}
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => setBookmarkFilterType('favorites')}
+                  className={`flex-1 py-2 text-sm font-medium transition-all ${bookmarkFilterType === 'favorites' ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-400'}`}
+                  style={{ color: bookmarkFilterType === 'favorites' ? '#8b5cf6' : 'var(--text-secondary)', cursor: 'pointer' }}
+                >
+                  Favorites
+                </button>
+                <button
+                  onClick={() => setBookmarkFilterType('reading-list')}
+                  className={`flex-1 py-2 text-sm font-medium transition-all ${bookmarkFilterType === 'reading-list' ? 'text-purple-600 border-b-2 border-purple-600' : 'text-gray-400'}`}
+                  style={{ color: bookmarkFilterType === 'reading-list' ? '#8b5cf6' : 'var(--text-secondary)', cursor: 'pointer' }}
+                >
+                  Reading List
+                </button>
+              </div>
 
-              {/* Search Input */}
-              <div className="relative mb-3">
+              {/* Search Bar */}
+              <div className="relative">
                 <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-secondary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <circle cx="11" cy="11" r="8" strokeWidth={2} />
+                  <circle cx="11" cy="11" r={8} strokeWidth={2} />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35" />
                 </svg>
-                <Input
+                <input
+                  type="text"
                   placeholder="Search bookmarks..."
                   value={bookmarkSearchQuery}
                   onChange={(e) => setBookmarkSearchQuery(e.target.value)}
-                  className="pl-10"
-                  style={{ paddingRight: '12px' }}
+                  className="w-full pl-10 pr-4 py-2 rounded-lg text-sm"
+                  style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)' }}
                 />
               </div>
 
-              {availableBookmarksLoading ? (
-                <div className="text-center py-8" style={{ color: 'var(--text-secondary)' }}>
-                  <div className="inline-block w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mb-2"></div>
-                  <p>Loading bookmarks...</p>
-                </div>
-              ) : filteredBookmarks.length === 0 ? (
-                <div className="text-center py-8" style={{ color: 'var(--text-secondary)' }}>
-                  <p className="text-4xl mb-2">📚</p>
-                  <p>{bookmarkSearchQuery ? 'No bookmarks found matching your search' : 'No bookmarks available'}</p>
-                  <p className="text-sm mt-1">Create a new bookmark or add bookmarks from other collections</p>
-                </div>
-              ) : (
-                <div className="max-h-80 overflow-y-auto space-y-2 pr-2" style={{
-                  scrollbarWidth: 'thin',
-                  scrollbarColor: 'transparent transparent'
-                }}>
-                  <style>{`
-                    div[style*="max-h-80"]::-webkit-scrollbar {
-                      width: 8px;
-                    }
-                    div[style*="max-h-80"]::-webkit-scrollbar-track {
-                      background: transparent;
-                    }
-                    div[style*="max-h-80"]::-webkit-scrollbar-thumb {
-                      background: transparent;
-                      border-radius: 4px;
-                    }
-                    div[style*="max-h-80"]:hover::-webkit-scrollbar-thumb {
-                      background: rgba(156, 163, 175, 0.5);
-                    }
-                    div[style*="max-h-80"]::-webkit-scrollbar-thumb:hover {
-                      background: rgba(156, 163, 175, 0.7);
-                    }
-                  `}</style>
-                  {filteredBookmarks.map(bookmark => (
-                    <button
-                      key={bookmark.id}
-                      onClick={() => addExistingToCollection(bookmark)}
-                      disabled={actionLoading}
-                      className="w-full text-left p-3 rounded-lg transition-all duration-75 active:scale-98 border hover:shadow-md"
-                      style={{
-                        color: 'var(--text-primary)',
-                        cursor: 'pointer',
-                        backgroundColor: 'var(--bg-secondary)',
-                        borderColor: 'var(--border-color)'
-                      }}
-                    >
-                      <div className="flex items-center gap-3">
-                        <img
-                          src={`https://www.google.com/s2/favicons?domain=${getDomain(bookmark.url)}&sz=32`}
-                          className="w-6 h-6 rounded flex-shrink-0"
-                          alt=""
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium truncate text-sm" style={{ color: 'var(--text-primary)' }}>
-                            {bookmark.title}
-                          </p>
-                          <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
-                            {bookmark.url}
-                          </p>
-                        </div>
-                        <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              {/* Filter and search bookmarks */}
+              {(() => {
+                let filtered = availableBookmarks
+                if (bookmarkFilterType === 'favorites') {
+                  filtered = filtered.filter(b => b.is_favorite)
+                } else if (bookmarkFilterType === 'reading-list') {
+                  filtered = filtered.filter(b => !b.is_read)
+                }
+                if (bookmarkSearchQuery) {
+                  const query = bookmarkSearchQuery.toLowerCase()
+                  filtered = filtered.filter(b =>
+                    b.title?.toLowerCase().includes(query) ||
+                    b.url?.toLowerCase().includes(query)
+                  )
+                }
+                return filtered
+              })().map(bookmark => {
+                const isSelected = selectedBookmarkIds.has(bookmark.id)
+                return (
+                  <button
+                    key={bookmark.id}
+                    onClick={() => {
+                      const newSelected = new Set(selectedBookmarkIds)
+                      if (isSelected) {
+                        newSelected.delete(bookmark.id)
+                      } else {
+                        newSelected.add(bookmark.id)
+                      }
+                      setSelectedBookmarkIds(newSelected)
+                    }}
+                    className="w-full p-3 rounded-lg text-left transition-all cursor-pointer flex items-center gap-3"
+                    style={{
+                      backgroundColor: isSelected ? 'rgba(139, 92, 246, 0.15)' : 'var(--bg-secondary)',
+                      border: isSelected ? '2px solid #8b5cf6' : '2px solid transparent',
+                      color: 'var(--text-primary)'
+                    }}
+                  >
+                    {/* Checkbox */}
+                    <div className="w-5 h-5 rounded flex items-center justify-center flex-shrink-0" style={{
+                      backgroundColor: isSelected ? '#8b5cf6' : 'var(--bg-primary)',
+                      border: isSelected ? '2px solid #8b5cf6' : '2px solid var(--border-color)'
+                    }}>
+                      {isSelected && (
+                        <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 1.414z" clipRule="evenodd" />
                         </svg>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+                      )}
+                    </div>
 
-          {/* New Bookmark Tab */}
-          {addModalTab === 'new' && (
-            <form onSubmit={addBookmark} className="space-y-4">
-              <Input
-                label="URL"
-                placeholder="https://example.com"
-                value={formData.url}
-                onChange={(e) => setFormData({ ...formData, url: e.target.value })}
-                required
-              />
-              <Input
-                label="Title"
-                placeholder="Bookmark title"
-                value={formData.title}
-                onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-              />
-              {formError && (
-                <p className="text-red-500 text-sm">{formError}</p>
+                    {/* Favicon */}
+                    <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0 overflow-hidden" style={{ backgroundColor: 'var(--bg-primary)' }}>
+                      <img
+                        src={`https://www.google.com/s2/favicons?domain=${getDomain(bookmark.url)}&sz=32`}
+                        className="w-8 h-8"
+                        alt=""
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                      />
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>{bookmark.title}</p>
+                      <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--text-secondary)' }}>{bookmark.url}</p>
+                    </div>
+
+                    {/* Favorite indicator */}
+                    {bookmark.is_favorite && (
+                      <svg className="w-4 h-4 text-yellow-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                      </svg>
+                    )}
+                    {/* Reading list indicator (book icon) */}
+                    {!bookmark.is_read && (
+                      <svg className="w-4 h-4 text-green-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                      </svg>
+                    )}
+                  </button>
+                )
+              })}
+
+              {/* Filter bookmarks for the list */}
+              {(() => {
+                let filtered = availableBookmarks
+                if (bookmarkFilterType === 'favorites') {
+                  filtered = filtered.filter(b => b.is_favorite)
+                } else if (bookmarkFilterType === 'reading-list') {
+                  filtered = filtered.filter(b => !b.is_read)
+                }
+                if (bookmarkSearchQuery) {
+                  const query = bookmarkSearchQuery.toLowerCase()
+                  filtered = filtered.filter(b =>
+                    b.title?.toLowerCase().includes(query) ||
+                    b.url?.toLowerCase().includes(query)
+                  )
+                }
+                return filtered.length === 0
+              })() && (
+                <p style={{ color: 'var(--text-secondary)' }} className="text-center py-8">No bookmarks found</p>
               )}
+
+              {selectedBookmarkIds.size > 0 && (
+                <p className="text-sm text-center" style={{ color: 'var(--text-secondary)' }}>
+                  {selectedBookmarkIds.size} bookmark{selectedBookmarkIds.size > 1 ? 's' : ''} selected
+                </p>
+              )}
+
               <div className="flex gap-3 pt-2">
-                <Button type="button" variant="secondary" onClick={() => { setAddModalOpen(false); setFormError('') }} className="flex-1">
+                <button
+                  onClick={() => setAddModalOpen(false)}
+                  className="flex-1 px-4 py-2 rounded-lg font-medium transition-all"
+                  style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)', cursor: 'pointer' }}
+                >
                   Cancel
-                </Button>
-                <Button type="submit" disabled={actionLoading} className="flex-1">
-                  {actionLoading ? 'Adding...' : 'Add Bookmark'}
-                </Button>
+                </button>
+                <button
+                  onClick={() => addToCollection(selectedBookmarkIds, collectionId)}
+                  disabled={selectedBookmarkIds.size === 0}
+                  className="flex-1 px-4 py-2 rounded-lg font-medium text-white transition-all"
+                  style={{ backgroundColor: selectedBookmarkIds.size > 0 ? '#8b5cf6' : 'var(--bg-secondary)', color: selectedBookmarkIds.size > 0 ? 'white' : 'var(--text-secondary)', cursor: selectedBookmarkIds.size > 0 ? 'pointer' : 'not-allowed' }}
+                >
+                  Save
+                </button>
               </div>
-            </form>
+            </>
+          ) : (
+            <>
+              <form onSubmit={createAndAddBookmark} className="space-y-3">
+                <Input
+                  label="URL"
+                  placeholder="https://example.com"
+                  value={newBookmarkUrl}
+                  onChange={(e) => setNewBookmarkUrl(e.target.value)}
+                  required
+                />
+                <Input
+                  label="Title (optional)"
+                  placeholder="Bookmark title"
+                  value={newBookmarkTitle}
+                  onChange={(e) => setNewBookmarkTitle(e.target.value)}
+                />
+                {formError && (
+                  <p className="text-red-500 text-sm">{formError}</p>
+                )}
+                <div className="flex gap-3 pt-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => { setAddModalOpen(false); setNewBookmarkUrl(''); setNewBookmarkTitle(''); }}
+                    className="flex-1"
+                  >
+                    Cancel
+                  </Button>
+                  <Button type="submit" className="flex-1">
+                    Add to Collection
+                  </Button>
+                </div>
+              </form>
+            </>
           )}
         </div>
       </Modal>

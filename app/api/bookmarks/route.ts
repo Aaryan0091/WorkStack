@@ -1,137 +1,138 @@
 import { createClient } from '@supabase/supabase-js'
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
+import {
+  apiSuccess,
+  withApiHandler,
+  ApiError,
+  validateRequired,
+  isValidUrl,
+  getUserFromToken,
+  corsHeaders,
+  handleOptionsRequest
+} from '@/lib/api-response'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
-const GROQ_API_KEY = process.env.GROQ_API_KEY!
-
-// Base URL for internal API calls (auto-detected from request)
-
-// Helper to add CORS headers for extension requests
-function corsHeaders(response: NextResponse) {
-  // Allow requests from Chrome extensions
-  response.headers.set('Access-Control-Allow-Origin', '*')
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  return response
-}
+const GROQ_API_KEY = process.env.GROQ_API_KEY
 
 // Handle OPTIONS preflight request
-export async function OPTIONS(request: NextRequest) {
-  return corsHeaders(new NextResponse(null, { status: 200 }))
+export async function OPTIONS() {
+  return handleOptionsRequest()
 }
 
-// Verify auth token and get user
-async function getUserFromToken(authHeader: string | null) {
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return null
+export const POST = withApiHandler(async (request: NextRequest) => {
+  const authHeader = request.headers.get('Authorization')
+  const user = await getUserFromToken(authHeader)
+
+  if (!user) {
+    throw new ApiError('Unauthorized', 401, 'UNAUTHORIZED')
   }
 
-  const token = authHeader.substring(7)
-  const supabase = createClient(supabaseUrl, supabaseAnonKey)
+  const body = await request.json()
+  const { url, title, description, notes, folder_id, collection_id } = body
 
-  const { data, error } = await supabase.auth.getUser(token)
-
-  if (error || !data.user) {
-    console.error('Auth error:', error?.message)
-    return null
+  // Validate required fields
+  const validationError = validateRequired(body, ['url'])
+  if (validationError) {
+    throw new ApiError(validationError, 400, 'INVALID_INPUT')
   }
 
-  return data.user
-}
+  // Validate URL format
+  if (!isValidUrl(url)) {
+    throw new ApiError('Invalid URL format', 400, 'INVALID_INPUT')
+  }
 
-export async function POST(request: NextRequest) {
-  try {
-    const authHeader = request.headers.get('Authorization')
-    const user = await getUserFromToken(authHeader)
+  // Sanitize inputs
+  const sanitizedTitle = title?.trim() || ''
+  const sanitizedDescription = description?.trim() || ''
+  const sanitizedNotes = notes?.trim() || ''
 
-    if (!user) {
-      const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      return corsHeaders(response)
-    }
+  // Use service role key to bypass RLS
+  const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
 
-    const body = await request.json()
-    const { url, title, description, notes, folder_id, collection_id } = body
+  // Check if bookmark already exists for this user
+  const { data: existing } = await supabase
+    .from('bookmarks')
+    .select('id')
+    .eq('user_id', user.id)
+    .eq('url', url)
+    .single()
 
-    if (!url) {
-      const response = NextResponse.json({ error: 'URL is required' }, { status: 400 })
-      return corsHeaders(response)
-    }
+  if (existing) {
+    // If adding to a collection, add via junction table
+    if (collection_id) {
+      // Check if already in collection
+      const { data: existingInCollection } = await supabase
+        .from('collection_bookmarks')
+        .select('bookmark_id')
+        .eq('collection_id', collection_id)
+        .eq('bookmark_id', existing.id)
+        .single()
 
-    // Use service role key to bypass RLS
-    const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
-
-    // Check if bookmark already exists for this user
-    const { data: existing } = await supabase
-      .from('bookmarks')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('url', url)
-      .single()
-
-    if (existing) {
-      // If adding to a collection, update the existing bookmark
-      if (collection_id) {
-        const { data: updated } = await supabase
-          .from('bookmarks')
-          .update({ collection_id })
-          .eq('id', existing.id)
-          .select()
-          .single()
-
-        if (updated) {
-          const response = NextResponse.json({ success: true, bookmark: updated, updated: true })
-          return corsHeaders(response)
-        }
+      if (!existingInCollection) {
+        await supabase
+          .from('collection_bookmarks')
+          .insert({ collection_id, bookmark_id: existing.id })
       }
-      const response = NextResponse.json({ error: 'Bookmark already exists' }, { status: 409 })
-      return corsHeaders(response)
+
+      const { data: updated } = await supabase
+        .from('bookmarks')
+        .select()
+        .eq('id', existing.id)
+        .single()
+
+      return corsHeaders(apiSuccess({ bookmark: updated, updated: true }, 'Bookmark already exists, added to collection'))
     }
 
-    // Create the bookmark
-    const { data, error } = await supabase
-      .from('bookmarks')
-      .insert({
-        user_id: user.id,
-        url,
-        title: title || new URL(url).hostname,
-        description: description || null,
-        notes: notes || null,
-        folder_id: folder_id || null,
-        collection_id: collection_id || null,
-        is_read: true,
-        is_favorite: false,
-      })
-      .select()
-      .single()
-
-    if (error) {
-      console.error('Supabase error:', error)
-      const response = NextResponse.json({ error: error.message }, { status: 500 })
-      return corsHeaders(response)
-    }
-
-    // Trigger AI auto-tagging in background (fire and forget)
-    if (GROQ_API_KEY && data?.id) {
-      // Auto-detect base URL from request (works in both dev and production)
-      const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`
-      // Don't await - let it run in background
-      fetch(`${baseUrl}/api/ai/auto-tag`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': authHeader || '',
-        },
-        body: JSON.stringify({ bookmark_id: data.id }),
-      }).catch((err) => console.error('Background auto-tag failed:', err))
-    }
-
-    const response = NextResponse.json({ success: true, bookmark: data })
-    return corsHeaders(response)
-  } catch (error) {
-    console.error('API error:', error)
-    const response = NextResponse.json({ error: 'Internal server error' }, { status: 500 })
-    return corsHeaders(response)
+    throw new ApiError('Bookmark already exists', 409, 'DUPLICATE')
   }
-}
+
+  // Create the bookmark
+  const { data, error } = await supabase
+    .from('bookmarks')
+    .insert({
+      user_id: user.id,
+      url,
+      title: sanitizedTitle || new URL(url).hostname,
+      description: sanitizedDescription || null,
+      notes: sanitizedNotes || null,
+      folder_id: folder_id || null,
+      is_read: true,
+      is_favorite: false,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    throw new ApiError('Failed to create bookmark', 500, 'INTERNAL_ERROR')
+  }
+
+  // Trigger AI auto-tagging in background (fire and forget)
+  if (GROQ_API_KEY && data?.id) {
+    // Auto-detect base URL from request (works in both dev and production)
+    const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`
+    // Don't await - let it run in background
+    fetch(`${baseUrl}/api/ai/auto-tag`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authHeader || '',
+      },
+      body: JSON.stringify({ bookmark_id: data.id }),
+    }).catch((err) => console.error('Background auto-tag failed:', err))
+  }
+
+  // If collection_id is provided, add to collection via junction table
+  if (collection_id && data?.id) {
+    try {
+      await supabase
+        .from('collection_bookmarks')
+        .insert({ collection_id, bookmark_id: data.id })
+    } catch (err) {
+      console.error('Failed to add to collection:', err)
+    }
+  }
+
+  return corsHeaders(apiSuccess({ bookmark: data }, 'Bookmark created successfully', 201))
+})

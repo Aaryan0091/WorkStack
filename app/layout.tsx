@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ExtensionSync } from "@/components/extension-sync";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -40,8 +41,10 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <ExtensionSync />
-          {children}
+          <ErrorBoundary>
+            <ExtensionSync />
+            {children}
+          </ErrorBoundary>
         </ThemeProvider>
       </body>
     </html>

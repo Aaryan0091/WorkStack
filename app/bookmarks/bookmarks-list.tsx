@@ -10,33 +10,18 @@ import { Modal } from '@/components/ui/modal'
 import { OpenTabsModal } from '@/components/open-tabs-modal'
 import { Toast, ConfirmDialog } from '@/components/ui/toast'
 import type { Bookmark, Tag } from '@/lib/types'
+import {
+  guestStoreGet,
+  guestStoreSet,
+  guestStoreRemove,
+  GUEST_KEYS
+} from '@/lib/guest-storage'
 
 interface BookmarksListProps {
   initialBookmarks: Bookmark[]
   initialTags: Tag[]
   initialBookmarkTags: Record<string, Tag[]>
   isGuest?: boolean
-}
-
-// Helper for sessionStorage
-function sessionStoreGet(key: string): any {
-  if (typeof window === 'undefined') return null
-  try {
-    const item = sessionStorage.getItem(key)
-    return item ? JSON.parse(item) : null
-  } catch { return null }
-}
-
-function sessionStoreSet(key: string, value: any): void {
-  if (typeof window === 'undefined') return
-  try {
-    sessionStorage.setItem(key, JSON.stringify(value))
-  } catch (e) { console.error('sessionStorage error:', e) }
-}
-
-function sessionStoreRemove(key: string): void {
-  if (typeof window === 'undefined') return
-  sessionStorage.removeItem(key)
 }
 
 // Simple memoized bookmark card
@@ -55,7 +40,11 @@ const BookmarkCard = memo(({ bookmark, tags, onFavorite, onRead, onEdit, onDelet
   }
 
   return (
-    <Card className="hover:scale-[1.02] hover:shadow-lg transition-all duration-200 cursor-pointer">
+    <Card
+      className="hover:scale-[1.02] hover:shadow-lg transition-all duration-200 cursor-pointer"
+      role="article"
+      aria-label={`Bookmark: ${bookmark.title}`}
+    >
       <CardContent className="p-4">
         <div className="flex items-start gap-3">
           <div className="w-8 h-8 rounded flex items-center justify-center text-sm font-semibold" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>
@@ -89,21 +78,58 @@ const BookmarkCard = memo(({ bookmark, tags, onFavorite, onRead, onEdit, onDelet
             </div>
           </div>
         </div>
-        <div className="flex gap-2 mt-4 pt-4 border-t" style={{ borderColor: 'var(--border-color)' }}>
-          <button onClick={onFavorite} className={`p-2 rounded transition-all hover:text-yellow-500 cursor-pointer ${bookmark.is_favorite ? 'text-yellow-500' : 'text-gray-400'}`}>
-            <svg className="w-5 h-5" fill={bookmark.is_favorite ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg>
+        <div className="flex gap-2 mt-4 pt-4 border-t" style={{ borderColor: 'var(--border-color)' }} role="toolbar" aria-label="Bookmark actions">
+          <button
+            onClick={onFavorite}
+            className="group/btn relative p-2 rounded transition-all cursor-pointer"
+            aria-label={bookmark.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
+            aria-pressed={bookmark.is_favorite}
+          >
+            <svg className={`w-5 h-5 ${bookmark.is_favorite ? 'text-yellow-500' : 'text-gray-400 group-hover/btn:text-yellow-500'}`} fill={bookmark.is_favorite ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" /></svg>
+            <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 px-2 py-1 text-xs text-white rounded whitespace-nowrap opacity-0 transition-opacity duration-0 group-hover/btn:opacity-100 group-hover/btn:delay-300 pointer-events-none z-50" style={{ backgroundColor: '#1f2937' }}>
+              {bookmark.is_favorite ? 'Unfavorite' : 'Favorite'}
+            </span>
           </button>
-          <button onClick={onRead} className={`p-2 rounded transition-all hover:text-green-600 cursor-pointer ${!bookmark.is_read ? 'text-green-600' : 'text-gray-400'}`}>
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+          <button
+            onClick={onRead}
+            className="group/btn relative p-2 rounded transition-all cursor-pointer"
+            aria-label={bookmark.is_read ? 'Mark as unread' : 'Mark as read'}
+            aria-pressed={!bookmark.is_read}
+          >
+            <svg className={`w-5 h-5 ${!bookmark.is_read ? 'text-green-600' : 'text-gray-400 group-hover/btn:text-green-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+            <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 px-2 py-1 text-xs text-white rounded whitespace-nowrap opacity-0 transition-opacity duration-0 group-hover/btn:opacity-100 group-hover/btn:delay-300 pointer-events-none z-50" style={{ backgroundColor: '#1f2937' }}>
+              {bookmark.is_read ? 'Mark as unread' : 'Mark as read'}
+            </span>
           </button>
-          <button onClick={onEdit} className="p-2 rounded transition-all text-gray-400 hover:text-blue-600 cursor-pointer">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+          <button
+            onClick={onEdit}
+            className="group/btn relative p-2 rounded transition-all cursor-pointer"
+            aria-label="Edit bookmark"
+          >
+            <svg className="w-5 h-5 text-gray-400 group-hover/btn:text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+            <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 px-2 py-1 text-xs text-white rounded whitespace-nowrap opacity-0 transition-opacity duration-0 group-hover/btn:opacity-100 group-hover/btn:delay-300 pointer-events-none z-50" style={{ backgroundColor: '#1f2937' }}>
+              Edit
+            </span>
           </button>
-          <button onClick={onAddToCollection} className="p-2 rounded transition-all text-gray-400 hover:text-purple-600 cursor-pointer" title="Add to collection">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+          <button
+            onClick={onAddToCollection}
+            className="group/btn relative p-2 rounded transition-all cursor-pointer"
+            aria-label="Add to collection"
+          >
+            <svg className="w-5 h-5 text-gray-400 group-hover/btn:text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
+            <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 px-2 py-1 text-xs text-white rounded whitespace-nowrap opacity-0 transition-opacity duration-0 group-hover/btn:opacity-100 group-hover/btn:delay-300 pointer-events-none z-50" style={{ backgroundColor: '#1f2937' }}>
+              Add to collection
+            </span>
           </button>
-          <button onClick={onDelete} className="p-2 rounded transition-all text-gray-400 hover:text-red-600 cursor-pointer">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+          <button
+            onClick={onDelete}
+            className="group/btn relative p-2 rounded transition-all cursor-pointer"
+            aria-label="Delete bookmark"
+          >
+            <svg className="w-5 h-5 text-gray-400 group-hover/btn:text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+            <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 px-2 py-1 text-xs text-white rounded whitespace-nowrap opacity-0 transition-opacity duration-0 group-hover/btn:opacity-100 group-hover/btn:delay-300 pointer-events-none z-50" style={{ backgroundColor: '#1f2937' }}>
+              Delete
+            </span>
           </button>
         </div>
       </CardContent>
@@ -127,6 +153,11 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   const [bookmarkForCollection, setBookmarkForCollection] = useState<Bookmark | null>(null)
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<Set<string>>(new Set())
   const [bookmarkCollectionMap, setBookmarkCollectionMap] = useState<Record<string, Set<string>>>({})
+
+  // Update bookmarks when initialBookmarks prop changes (e.g., after import)
+  useEffect(() => {
+    setBookmarks(initialBookmarks)
+  }, [initialBookmarks])
   const [editingBookmark, setEditingBookmark] = useState<Bookmark | null>(null)
   const [formData, setFormData] = useState({ url: '', title: '', description: '', notes: '' })
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([])
@@ -281,7 +312,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
           }))
         }
       )
-      .subscribe((status) => {
+      .subscribe((status: string) => {
         console.log('Subscription status:', status)
       })
 
@@ -332,9 +363,9 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
     cleanupUnusedTags()
   }, [isGuest])
 
-  // Save to sessionStorage for guest mode
+  // Save to localStorage for guest mode
   const saveGuestBookmarks = (updatedBookmarks: Bookmark[]) => {
-    sessionStoreSet('workstack_guest_bookmarks', updatedBookmarks)
+    guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedBookmarks)
     setBookmarks(updatedBookmarks)
   }
 
@@ -412,7 +443,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
         .eq('bookmark_id', bookmark.id)
 
       if (latestCollections) {
-        const latestIds = new Set(latestCollections.map((c: any) => c.collection_id))
+        const latestIds = new Set<string>(latestCollections.map((c: any) => c.collection_id as string))
         // Update cache
         setBookmarkCollectionMap(prev => ({
           ...prev,
@@ -487,7 +518,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
           .select('collection_id')
           .eq('bookmark_id', bookmarkId)
 
-        const existingIds = new Set(existingCollections?.map((c: any) => c.collection_id) || [])
+        const existingIds = new Set<string>(existingCollections?.map((c: any) => c.collection_id as string) || [])
 
         // Add to new collections
         const toAdd = Array.from(targetCollectionIds).filter(id => !existingIds.has(id))
@@ -565,17 +596,17 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
             // Remove from local state
             unusedTags.forEach(tag => {
               const index = tags.findIndex(t => t.id === tag.id)
-          if (index > -1) {
-            tags.splice(index, 1)
+              if (index > -1) {
+                tags.splice(index, 1)
+              }
+            })
+            // Delete from database
+            await supabase
+              .from('tags')
+              .delete()
+              .in('id', unusedTags.map(t => t.id))
           }
-        })
-        // Delete from database
-        await supabase
-          .from('tags')
-          .delete()
-          .in('id', unusedTags.map(t => t.id))
-      }
-    }
+        }
         setConfirmDialog(null)
       }
     })
@@ -688,7 +719,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
     e.preventDefault()
 
     if (isGuest) {
-      // Guest mode - save to sessionStorage
+      // Guest mode - save to localStorage
       const newBookmark: Bookmark = {
         id: crypto.randomUUID(),
         user_id: '',
@@ -778,7 +809,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
 
   const addBookmarks = async (newTabs: { url: string; title: string }[]) => {
     if (isGuest) {
-      // Guest mode - save to sessionStorage
+      // Guest mode - save to localStorage
       const newBookmarks: Bookmark[] = newTabs.map(tab => ({
         id: crypto.randomUUID(),
         user_id: '',
@@ -819,16 +850,17 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   return (
     <>
       {/* Search bar and Filter buttons */}
-      <div className="flex items-center gap-3 mb-6 flex-wrap">
+      <div className="flex items-center gap-3 mb-6 flex-wrap" role="search" aria-label="Filter bookmarks">
         <Input
           placeholder="Search..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="w-40"
+          aria-label="Search bookmarks"
         />
 
         {/* Filter buttons - multi-select */}
-        <div className="flex gap-2">
+        <div className="flex gap-2" role="group" aria-label="Filter by type">
           {/* All button */}
           <button
             onClick={clearAllFilters}
@@ -837,6 +869,8 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
               backgroundColor: activeFilters.size === 0 ? '#3b82f6' : 'var(--bg-secondary)',
               color: activeFilters.size === 0 ? 'white' : 'var(--text-primary)'
             }}
+            aria-label="Show all bookmarks"
+            aria-pressed={activeFilters.size === 0}
           >
             📚 All
           </button>
@@ -852,6 +886,8 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
                   backgroundColor: isActive ? '#3b82f6' : 'var(--bg-secondary)',
                   color: isActive ? 'white' : 'var(--text-primary)'
                 }}
+                aria-label={`Show ${filterType === 'favorites' ? 'favorite' : 'reading list'} bookmarks`}
+                aria-pressed={isActive}
               >
                 {filterType === 'favorites' ? '⭐ Favorites' : '📖 Reading List'}
               </button>

@@ -1,10 +1,69 @@
 'use client'
 
+import { useRef } from 'react'
+
 interface BookmarksHeaderProps {
   isGuest?: boolean
+  bookmarks?: any[]
+  onImport?: (data: any) => void
+  importing?: boolean
+  onError?: (message: string) => void
 }
 
-export function BookmarksHeader({ isGuest = false }: BookmarksHeaderProps) {
+export function BookmarksHeader({ isGuest = false, bookmarks = [], onImport, importing = false, onError }: BookmarksHeaderProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const exportBookmarks = () => {
+    const exportData = {
+      version: '1.0',
+      exportDate: new Date().toISOString(),
+      bookmarks: bookmarks.map(b => ({
+        url: b.url,
+        title: b.title,
+        description: b.description,
+        notes: b.notes,
+        is_favorite: b.is_favorite,
+        is_read: b.is_read,
+        created_at: b.created_at
+      }))
+    }
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `bookmarks-export-${new Date().toISOString().split('T')[0]}.json`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string)
+        if (data.bookmarks && Array.isArray(data.bookmarks)) {
+          onImport?.(data)
+        } else {
+          onError?.('Invalid file format. Please export from WorkStack and try again.')
+        }
+      } catch (error) {
+        onError?.('Error reading file. Please try again.')
+      }
+    }
+    reader.readAsText(file)
+
+    // Reset input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
   return (
     <div className="flex items-center justify-between">
       <div>
@@ -18,6 +77,51 @@ export function BookmarksHeader({ isGuest = false }: BookmarksHeaderProps) {
           )}
         </p>
       </div>
+
+      {!isGuest && (
+        <div className="flex gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            onChange={handleImport}
+            className="hidden"
+          />
+          <button
+            onClick={() => !importing && fileInputRef.current?.click()}
+            disabled={importing}
+            className="px-4 py-2 rounded-lg text-sm font-medium transition-all hover:scale-105 active:scale-95 flex items-center gap-2"
+            style={{
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-primary)',
+              cursor: importing ? 'not-allowed' : 'pointer',
+              opacity: importing ? 0.6 : 1
+            }}
+          >
+            {importing ? (
+              <>
+                <div className="w-4 h-4 border-2 border-gray-400 border-t-purple-600 rounded-full animate-spin" />
+                Importing...
+              </>
+            ) : (
+              <>📥 Import</>
+            )}
+          </button>
+          <button
+            onClick={exportBookmarks}
+            disabled={bookmarks.length === 0}
+            className="px-4 py-2 rounded-lg text-sm font-medium transition-all hover:scale-105 active:scale-95"
+            style={{
+              backgroundColor: bookmarks.length > 0 ? '#8b5cf6' : 'var(--bg-secondary)',
+              color: bookmarks.length > 0 ? 'white' : 'var(--text-secondary)',
+              cursor: bookmarks.length > 0 ? 'pointer' : 'not-allowed',
+              opacity: bookmarks.length === 0 ? 0.6 : 1
+            }}
+          >
+            📤 Export
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -6,6 +6,12 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Modal } from '@/components/ui/modal'
 import { Textarea } from '@/components/ui/input'
 import type { Bookmark } from '@/lib/types'
+import {
+  guestStoreGet,
+  guestStoreSet,
+  GUEST_KEYS,
+  markGuestMode
+} from '@/lib/guest-storage'
 
 // Helper function to format time since creation
 function formatTimeSince(dateString: string): string {
@@ -57,16 +63,16 @@ export function ReadingListContent() {
       const { data: { user } } = await supabase.auth.getUser()
 
       if (!user) {
-        // Guest mode - load from sessionStorage
+        // Guest mode - load from localStorage
         setIsGuest(true)
+        markGuestMode()
         try {
-          const storedBookmarks = sessionStorage.getItem('workstack_guest_bookmarks')
-          if (storedBookmarks) {
-            const allBookmarks: Bookmark[] = JSON.parse(storedBookmarks)
-            const readingList = allBookmarks.filter(b => !b.is_read)
+          const storedBookmarks: Bookmark[] = guestStoreGet(GUEST_KEYS.BOOKMARKS) || []
+          if (storedBookmarks.length > 0) {
+            const readingList = storedBookmarks.filter((b: Bookmark) => !b.is_read)
             setBookmarks(readingList)
             setNeverOpened(readingList.filter(isOldNeverOpened))
-            setSuggestions(allBookmarks.filter(b => b.is_read).slice(0, 6))
+            setSuggestions(storedBookmarks.filter((b: Bookmark) => b.is_read).slice(0, 6))
           }
         } catch (e) {
           console.error('Error loading guest data:', e)
@@ -109,7 +115,8 @@ export function ReadingListContent() {
     setLoadingSemantic(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      const token = session?.session?.access_token
+      // Try different possible locations for the token
+      let token = session?.access_token || session?.session?.access_token
 
       if (!token) {
         setLoadingSemantic(false)
@@ -135,11 +142,23 @@ export function ReadingListContent() {
     }
   }
 
-  // Track bookmark open
+  // Track bookmark open - only marks as opened, NOT as read
   const handleBookmarkOpen = async (bookmark: Bookmark) => {
-    // Track the open event asynchronously (don't block navigation)
+    // Get auth token - try multiple methods
     const { data: { session } } = await supabase.auth.getSession()
-    const token = session?.session?.access_token
+
+    // Try different possible locations for the token
+    let token = session?.access_token || session?.session?.access_token
+
+    // If still no token, try getting from current session
+    if (!token) {
+      const { data: { session: currentSession } } = await supabase.auth.getSession()
+      token = currentSession?.access_token
+    }
+
+    if (!token) {
+      return
+    }
 
     fetch(`/api/bookmarks/${bookmark.id}/open`, {
       method: 'POST',
@@ -147,7 +166,21 @@ export function ReadingListContent() {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`,
       },
-    }).catch(console.error)
+    })
+    .then((response) => {
+      if (response.ok) {
+        // On successful open, update the bookmark locally with last_opened_at
+        // This will remove it from neverOpened since isOldNeverOpened checks for last_opened_at
+        setBookmarks(prev => prev.map(b =>
+          b.id === bookmark.id
+            ? { ...b, last_opened_at: new Date().toISOString() }
+            : b
+        ))
+        // Remove from neverOpened state immediately
+        setNeverOpened(prev => prev.filter(b => b.id !== bookmark.id))
+      }
+    })
+    .catch(console.error)
 
     // Remove from neverOpened state immediately for better UX
     setNeverOpened(neverOpened.filter(b => b.id !== bookmark.id))
@@ -157,15 +190,14 @@ export function ReadingListContent() {
     // Remove from reading list (set is_read = true)
     if (isGuest) {
       try {
-        const storedBookmarks = sessionStorage.getItem('workstack_guest_bookmarks')
+        const storedBookmarks: Bookmark[] = guestStoreGet(GUEST_KEYS.BOOKMARKS)
         if (storedBookmarks) {
-          const allBookmarks: Bookmark[] = JSON.parse(storedBookmarks)
-          const updatedBookmarks = allBookmarks.map(b => b.id === bookmark.id ? { ...b, is_read: true } : b)
-          sessionStorage.setItem('workstack_guest_bookmarks', JSON.stringify(updatedBookmarks))
+          const updatedBookmarks = storedBookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_read: true } : b)
+          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedBookmarks)
         }
-      } catch (e) { console.error('Error saving to sessionStorage:', e) }
-      setBookmarks(bookmarks.filter(b => b.id !== bookmark.id))
-      setNeverOpened(neverOpened.filter(b => b.id !== bookmark.id))
+      } catch (e) { console.error('Error saving to localStorage:', e) }
+      setBookmarks(bookmarks.filter((b: Bookmark) => b.id !== bookmark.id))
+      setNeverOpened(neverOpened.filter((b: Bookmark) => b.id !== bookmark.id))
       setSuggestions([{ ...bookmark, is_read: true }, ...suggestions])
       return
     }
@@ -183,41 +215,39 @@ export function ReadingListContent() {
     // Add to reading list (set is_read = false)
     if (isGuest) {
       try {
-        const storedBookmarks = sessionStorage.getItem('workstack_guest_bookmarks')
+        const storedBookmarks: Bookmark[] = guestStoreGet(GUEST_KEYS.BOOKMARKS)
         if (storedBookmarks) {
-          const allBookmarks: Bookmark[] = JSON.parse(storedBookmarks)
-          const updatedBookmarks = allBookmarks.map(b => b.id === bookmark.id ? { ...b, is_read: false } : b)
-          sessionStorage.setItem('workstack_guest_bookmarks', JSON.stringify(updatedBookmarks))
+          const updatedBookmarks = storedBookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_read: false } : b)
+          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedBookmarks)
         }
-      } catch (e) { console.error('Error saving to sessionStorage:', e) }
+      } catch (e) { console.error('Error saving to localStorage:', e) }
       setBookmarks([{ ...bookmark, is_read: false }, ...bookmarks])
-      setSuggestions(suggestions.filter(b => b.id !== bookmark.id))
-      setSemanticallyRelated(semanticallyRelated.filter(b => b.id !== bookmark.id))
+      setSuggestions(suggestions.filter((b: Bookmark) => b.id !== bookmark.id))
+      setSemanticallyRelated(semanticallyRelated.filter((b: Bookmark) => b.id !== bookmark.id))
       return
     }
     await supabase.from('bookmarks').update({ is_read: false }).eq('id', bookmark.id)
     // Update the bookmark object to reflect is_read: false before adding to state
     setBookmarks([{ ...bookmark, is_read: false }, ...bookmarks])
-    setSuggestions(suggestions.filter(b => b.id !== bookmark.id))
+    setSuggestions(suggestions.filter((b: Bookmark) => b.id !== bookmark.id))
     setSemanticallyRelated(semanticallyRelated.filter(b => b.id !== bookmark.id))
   }
 
   const updateNotes = async (bookmark: Bookmark, notes: string) => {
     if (isGuest) {
       try {
-        const storedBookmarks = sessionStorage.getItem('workstack_guest_bookmarks')
+        const storedBookmarks: Bookmark[] = guestStoreGet(GUEST_KEYS.BOOKMARKS)
         if (storedBookmarks) {
-          const allBookmarks: Bookmark[] = JSON.parse(storedBookmarks)
-          const updatedBookmarks = allBookmarks.map(b => b.id === bookmark.id ? { ...b, notes } : b)
-          sessionStorage.setItem('workstack_guest_bookmarks', JSON.stringify(updatedBookmarks))
-          setBookmarks(bookmarks.map(b => b.id === bookmark.id ? { ...b, notes } : b))
+          const updatedBookmarks = storedBookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, notes } : b)
+          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedBookmarks)
+          setBookmarks(bookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, notes } : b))
         }
-      } catch (e) { console.error('Error saving to sessionStorage:', e) }
+      } catch (e) { console.error('Error saving to localStorage:', e) }
       setModalOpen(false)
       return
     }
     await supabase.from('bookmarks').update({ notes }).eq('id', bookmark.id)
-    setBookmarks(bookmarks.map(b => b.id === bookmark.id ? { ...b, notes } : b))
+    setBookmarks(bookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, notes } : b))
     setModalOpen(false)
   }
 
