@@ -23,6 +23,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const [collection, setCollection] = useState<Collection | null>(null)
   const [bookmarks, setBookmarks] = useState<CollectionBookmark[]>([])
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [userNames, setUserNames] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
   const [addModalOpen, setAddModalOpen] = useState(false)
@@ -46,6 +47,31 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
   useEffect(() => {
     fetchData()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collectionId])
+
+  // Real-time subscription for collection_bookmarks changes
+  useEffect(() => {
+    const channel = supabase
+      .channel('collection_bookmarks_changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*', // Listen to INSERT, UPDATE, DELETE
+          schema: 'public',
+          table: 'collection_bookmarks',
+          filter: `collection_id=eq.${collectionId}`
+        },
+        () => {
+          // Refresh data when any change happens to this collection's bookmarks
+          fetchData()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collectionId])
 
@@ -96,12 +122,20 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const addExistingToCollection = async (bookmark: Bookmark) => {
     setActionLoading(true)
 
+    // Get current user for added_by field
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setActionLoading(false)
+      return
+    }
+
     // Add to collection via junction table
     const { error } = await supabase
       .from('collection_bookmarks')
       .insert({
         collection_id: collectionId,
-        bookmark_id: bookmark.id
+        bookmark_id: bookmark.id,
+        added_by: user.id
       })
 
     if (error) {
@@ -120,25 +154,46 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const addToCollection = async (bookmarkIds: Set<string>, collectionIdToAdd: string) => {
     setActionLoading(true)
 
-    // Add all selected bookmarks to collection via junction table
-    const inserts = Array.from(bookmarkIds).map(bookmarkId =>
-      supabase
-        .from('collection_bookmarks')
-        .insert({
-          collection_id: collectionIdToAdd,
-          bookmark_id: bookmarkId
-        })
-    )
+    // Get current user for added_by field
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setActionLoading(false)
+      return
+    }
 
-    await Promise.all(inserts)
+    try {
+      // Add all selected bookmarks to collection via junction table
+      const insertResults = await Promise.allSettled(
+        Array.from(bookmarkIds).map(bookmarkId =>
+          supabase
+            .from('collection_bookmarks')
+            .insert({
+              collection_id: collectionIdToAdd,
+              bookmark_id: bookmarkId,
+              added_by: user.id
+            })
+            .select()
+            .single()
+        )
+      )
 
-    // Refresh data
-    await fetchData()
-    await fetchAvailableBookmarks()
+      // Check for any failed inserts
+      const failures = insertResults.filter(r => r.status === 'rejected')
+      if (failures.length > 0) {
+        console.error('Some bookmarks failed to add:', failures)
+      }
 
-    setSelectedBookmarkIds(new Set())
-    setAddModalOpen(false)
-    setActionLoading(false)
+      // Refresh data
+      await fetchData()
+      await fetchAvailableBookmarks()
+
+      setSelectedBookmarkIds(new Set())
+      setAddModalOpen(false)
+    } catch (error) {
+      console.error('Error adding bookmarks to collection:', error)
+    } finally {
+      setActionLoading(false)
+    }
   }
 
   const createAndAddBookmark = async (e: React.FormEvent) => {
@@ -203,7 +258,8 @@ export function CollectionDetailContent({ collectionId }: Props) {
       .from('collection_bookmarks')
       .insert({
         collection_id: collectionId,
-        bookmark_id: data.id
+        bookmark_id: data.id,
+        added_by: user.id
       })
 
     if (error) {
@@ -252,10 +308,29 @@ export function CollectionDetailContent({ collectionId }: Props) {
     const newCollection = collectionRes.data
 
     // Extract bookmarks from junction table result with added_by info
-    let newBookmarks: CollectionBookmark[] = (junctionRes.data || []).map((jb: any) => ({
-      ...jb.bookmarks,
-      added_by: jb.added_by
-    }))
+    let newBookmarks: CollectionBookmark[] = []
+    const orphanedIds: string[] = []
+
+    ;(junctionRes.data || []).forEach((jb: any) => {
+      if (jb.bookmarks) {
+        newBookmarks.push({
+          ...jb.bookmarks,
+          added_by: jb.added_by
+        })
+      } else {
+        // Bookmark was deleted but junction entry still exists - track orphaned
+        orphanedIds.push(jb.bookmark_id)
+      }
+    })
+
+    // Clean up orphaned entries if user is the owner
+    if (newCollection && user?.id === newCollection.user_id && orphanedIds.length > 0) {
+      await supabase
+        .from('collection_bookmarks')
+        .delete()
+        .eq('collection_id', collectionId)
+        .in('bookmark_id', orphanedIds)
+    }
 
     // If not the owner, filter out bookmarks the user has removed from their view
     if (newCollection && user?.id !== newCollection.user_id) {
@@ -267,6 +342,28 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
       const removedIds = new Set(removedBookmarks?.map((rb: { bookmark_id: string }) => rb.bookmark_id) || [])
       newBookmarks = newBookmarks.filter((b: CollectionBookmark) => !removedIds.has(b.id))
+    }
+
+    // Fetch user names for all unique added_by user IDs
+    const uniqueAddedBy = Array.from(new Set(
+      newBookmarks
+        .map(b => b.added_by)
+        .filter(Boolean)
+    ))
+
+    if (uniqueAddedBy.length > 0) {
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('id, full_name, email')
+        .in('id', uniqueAddedBy)
+
+      if (profiles) {
+        const namesMap: Record<string, string> = {}
+        profiles.forEach((profile: any) => {
+          namesMap[profile.id] = profile.full_name || profile.email?.split('@')[0] || 'Unknown User'
+        })
+        setUserNames(namesMap)
+      }
     }
 
     if (newCollection) {
@@ -330,7 +427,8 @@ export function CollectionDetailContent({ collectionId }: Props) {
         .from('collection_bookmarks')
         .insert({
           collection_id: collectionId,
-          bookmark_id: existingBookmark.id
+          bookmark_id: existingBookmark.id,
+          added_by: user.id
         })
 
       if (error) {
@@ -365,7 +463,8 @@ export function CollectionDetailContent({ collectionId }: Props) {
         .from('collection_bookmarks')
         .insert({
           collection_id: collectionId,
-          bookmark_id: data.id
+          bookmark_id: data.id,
+          added_by: user.id
         })
 
       if (error) {
@@ -389,8 +488,20 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const removeFromCollection = async (bookmarkId: string) => {
     setActionLoading(true)
 
+    // Ensure we have the current user ID
+    let userId = currentUserId
+    if (!userId) {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        setActionLoading(false)
+        return
+      }
+      userId = user.id
+      setCurrentUserId(user.id)
+    }
+
     // Check if user is owner
-    const isOwner = collection?.user_id === currentUserId
+    const isOwner = collection?.user_id === userId
 
     if (isOwner) {
       // Owner: actually delete from collection_bookmarks (removes for everyone)
@@ -409,7 +520,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
         .insert({
           collection_id: collectionId,
           bookmark_id: bookmarkId,
-          user_id: currentUserId!
+          user_id: userId
         })
 
       if (error) {
@@ -435,7 +546,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
     )
     setBookmarks(updatedBookmarks)
 
-    // Update in background
+    // Update in background - no user check needed, favorites are per-bookmark
     await supabase
       .from('bookmarks')
       .update({ is_favorite: newStatus })
@@ -592,10 +703,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
           ;(window as typeof window & { chrome: { runtime: { sendMessage: (extensionId: string, message: { action: string; urls: string[] }, callback: () => void) => void; lastError?: { message: string } } } }).chrome.runtime.sendMessage(extensionId, { action: 'openUrls', urls }, () => {
             if ((window as typeof window & { chrome: { runtime: { lastError?: { message: string } } } }).chrome.runtime.lastError) {
               // Extension not available, fall back to anchor method
-              console.log('Extension not responding, using fallback method')
               openTabsFallback(urls)
-            } else {
-              console.log('Opened tabs via extension')
             }
           })
           // Clear selection after opening
@@ -604,7 +712,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
           return
         }
       } catch {
-        console.log('Extension detection failed, using fallback')
+        // Extension detection failed, fall through to fallback
       }
     }
 
@@ -881,21 +989,22 @@ export function CollectionDetailContent({ collectionId }: Props) {
         </Card>
       ) : (
         <div className="space-y-3">
-          {filteredBookmarks.map(bookmark => {
+          {filteredBookmarks.map((bookmark, index) => {
             const isSelected = selectedBookmarkIds.has(bookmark.id)
             return (
-              <div key={bookmark.id} className="block">
-                <Card
-                  className={`transition-all duration-200 hover:scale-[1.02] hover:shadow-lg cursor-pointer group ${
-                    selectionMode && isSelected ? 'ring-2 ring-blue-500' : ''
-                  }`}
-                  style={{ backgroundColor: 'var(--bg-secondary)' }}
-                  onClick={() => {
-                    if (selectionMode) {
-                      toggleBookmarkSelection(bookmark.id)
-                    }
-                  }}
-                >
+              <Card
+                key={bookmark.id || `bookmark-${index}`}
+                className={`transition-all duration-200 hover:scale-[1.02] hover:shadow-lg cursor-pointer group ${
+                  selectionMode && isSelected ? 'ring-2 ring-blue-500' : ''
+                }`}
+                style={{ backgroundColor: 'var(--bg-secondary)' }}
+                onClick={(e) => {
+                  // Only toggle selection if in selection mode and clicking outside buttons
+                  if (selectionMode) {
+                    toggleBookmarkSelection(bookmark.id)
+                  }
+                }}
+              >
                   <CardContent className="p-4">
                     <div className="flex items-center gap-4">
                       {/* Checkbox in selection mode */}
@@ -920,14 +1029,18 @@ export function CollectionDetailContent({ collectionId }: Props) {
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className={`font-medium truncate transition-colors ${!selectionMode ? 'group-hover:text-blue-600' : ''}`} style={{ color: 'var(--text-primary)' }}>
-                            {bookmark.title}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                            {bookmark.title || bookmark.url || 'Untitled'}
                           </p>
-                          {/* User attribution */}
                           {bookmark.added_by && bookmark.added_by !== currentUserId && (
-                            <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: 'rgba(139, 92, 246, 0.15)', color: '#8b5cf6' }}>
-                              {bookmark.added_by === collection?.user_id ? 'Added by owner' : 'Added by another user'}
+                            <span className="text-xs px-2 py-0.5 rounded-full whitespace-nowrap" style={{ backgroundColor: 'rgba(139, 92, 246, 0.15)', color: '#8b5cf6' }}>
+                              Added by {bookmark.added_by === collection?.user_id ? 'owner' : userNames[bookmark.added_by] || 'another user'}
+                            </span>
+                          )}
+                          {bookmark.added_by && bookmark.added_by === currentUserId && (
+                            <span className="text-xs px-2 py-0.5 rounded-full whitespace-nowrap" style={{ backgroundColor: 'rgba(34, 197, 94, 0.15)', color: '#22c55e' }}>
+                              Added by you
                             </span>
                           )}
                         </div>
@@ -939,19 +1052,19 @@ export function CollectionDetailContent({ collectionId }: Props) {
                         )}
                       </div>
                       {!selectionMode && (
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <span className="w-4"></span>
+                        <div className="flex items-center gap-2 flex-shrink-0" style={{ pointerEvents: 'auto', zIndex: 10 }}>
                           <button
+                            type="button"
                             onClick={(e) => {
-                              e.preventDefault()
                               e.stopPropagation()
                               toggleFavorite(bookmark.id, bookmark.is_favorite)
                             }}
-                            className="p-2 rounded-lg transition-all group/star cursor-pointer"
+                            className="p-2 rounded-lg transition-all hover:bg-gray-100 dark:hover:bg-gray-800"
                             title={bookmark.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
+                            style={{ cursor: 'pointer', pointerEvents: 'auto' }}
                           >
                             <svg
-                              className={`w-5 h-5 ${bookmark.is_favorite ? 'text-yellow-500' : 'text-gray-400 group-hover/star:text-yellow-500'}`}
+                              className={`w-5 h-5 ${bookmark.is_favorite ? 'text-yellow-500' : 'text-gray-400'}`}
                               fill={bookmark.is_favorite ? "currentColor" : "none"}
                               stroke="currentColor"
                               viewBox="0 0 24 24"
@@ -960,13 +1073,16 @@ export function CollectionDetailContent({ collectionId }: Props) {
                             </svg>
                           </button>
                           <button
+                            type="button"
                             onClick={(e) => {
-                              e.preventDefault()
                               e.stopPropagation()
                               removeFromCollection(bookmark.id)
                             }}
-                            className="p-2 text-gray-400 hover:text-red-600 rounded-lg transition-all cursor-pointer"
+                            className="p-2 rounded-lg transition-all hover:bg-gray-100 dark:hover:bg-gray-800"
                             title="Remove from collection"
+                            style={{ cursor: 'pointer', pointerEvents: 'auto', color: 'var(--text-secondary)' }}
+                            onMouseEnter={(e) => { e.currentTarget.style.color = '#dc2626' }}
+                            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-secondary)' }}
                           >
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -977,8 +1093,11 @@ export function CollectionDetailContent({ collectionId }: Props) {
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={(e) => e.stopPropagation()}
-                            className="p-2 text-gray-400 hover:text-blue-600 rounded-lg transition-all cursor-pointer"
+                            className="p-2 rounded-lg transition-all hover:bg-gray-100 dark:hover:bg-gray-800 inline-flex items-center justify-center"
                             title="Open in new tab"
+                            style={{ cursor: 'pointer', pointerEvents: 'auto', color: 'var(--text-secondary)' }}
+                            onMouseEnter={(e) => { e.currentTarget.style.color = '#2563eb' }}
+                            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-secondary)' }}
                           >
                             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
@@ -989,7 +1108,6 @@ export function CollectionDetailContent({ collectionId }: Props) {
                     </div>
                   </CardContent>
                 </Card>
-              </div>
             )
           })}
         </div>
@@ -1000,12 +1118,14 @@ export function CollectionDetailContent({ collectionId }: Props) {
         isOpen={addModalOpen}
         onClose={() => { setAddModalOpen(false); setShowNewBookmarkForm(false); setNewBookmarkUrl(''); setNewBookmarkTitle(''); setSelectedBookmarkIds(new Set()); setBookmarkFilterType('all'); setBookmarkSearchQuery(''); }}
         title="Add Bookmark"
+        size="sm"
         footer={
           !showNewBookmarkForm ? (
-            <div className="flex gap-3">
+            <>
               <button
+                key="cancel"
                 onClick={() => setAddModalOpen(false)}
-                className="flex-1 px-4 py-2.5 rounded-xl font-medium transition-all duration-200 border hover:shadow-md"
+                className="flex-1 px-3 py-3 rounded-xl font-medium transition-all duration-200 border"
                 style={{
                   backgroundColor: 'transparent',
                   borderColor: 'var(--border-color)',
@@ -1024,9 +1144,10 @@ export function CollectionDetailContent({ collectionId }: Props) {
                 Cancel
               </button>
               <button
+                key="save"
                 onClick={() => addToCollection(selectedBookmarkIds, collectionId)}
                 disabled={selectedBookmarkIds.size === 0}
-                className="flex-1 px-4 py-2.5 rounded-xl font-medium text-white transition-all duration-200 hover:shadow-lg hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                className="flex-1 px-3 py-3 rounded-xl font-medium text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{
                   background: selectedBookmarkIds.size > 0 ? 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)' : 'var(--bg-secondary)',
                   color: selectedBookmarkIds.size > 0 ? 'white' : 'var(--text-secondary)',
@@ -1035,7 +1156,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
               >
                 Save {selectedBookmarkIds.size > 0 && `(${selectedBookmarkIds.size})`}
               </button>
-            </div>
+            </>
           ) : null
         }
       >
@@ -1101,6 +1222,15 @@ export function CollectionDetailContent({ collectionId }: Props) {
                 />
               </div>
 
+              {/* Selected count - show above list */}
+              {selectedBookmarkIds.size > 0 && (
+                <p className="text-sm text-center" style={{ color: 'var(--text-secondary)' }}>
+                  {selectedBookmarkIds.size} bookmark{selectedBookmarkIds.size > 1 ? 's' : ''} selected
+                </p>
+              )}
+
+              {/* Scrollable bookmark list */}
+              <div className="space-y-2" style={{ maxHeight: '220px', overflowY: 'auto' }}>
               {/* Filter and search bookmarks */}
               {(() => {
                 let filtered = availableBookmarks
@@ -1201,12 +1331,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
               })() && (
                 <p style={{ color: 'var(--text-secondary)' }} className="text-center py-8">No bookmarks found</p>
               )}
-
-              {selectedBookmarkIds.size > 0 && (
-                <p className="text-sm text-center" style={{ color: 'var(--text-secondary)' }}>
-                  {selectedBookmarkIds.size} bookmark{selectedBookmarkIds.size > 1 ? 's' : ''} selected
-                </p>
-              )}
+              </div>
             </>
           ) : (
             <>

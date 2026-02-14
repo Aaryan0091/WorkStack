@@ -18,7 +18,16 @@ import {
   markGuestMode
 } from '@/lib/guest-storage'
 
+// Time-based greeting for personal touch
+function getGreeting(): string {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Good morning'
+  if (hour < 17) return 'Good afternoon'
+  return 'Good evening'
+}
+
 export function DashboardContent({ initialBookmarks, initialCollections, initialStats }: { initialBookmarks: Bookmark[]; initialCollections: Collection[]; initialStats: { totalBookmarks: number; favoritesCount: number; unreadCount: number } }) {
+  const greeting = getGreeting()
   const router = useRouter()
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(initialBookmarks)
   const [collections, setCollections] = useState<Collection[]>(initialCollections)
@@ -58,10 +67,19 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const isPollingRef = useRef(false) // Track if polling is already active
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
 
-  // Check if browser is Chromium-based (supports Chrome extensions)
+  // Check if browser is Chromium-based AND not mobile (supports Chrome extensions)
   const isChromiumBrowser = () => {
     if (typeof window === 'undefined') return false
     const userAgent = navigator.userAgent
+
+    // Check if mobile device (iOS or Android)
+    const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(userAgent)
+    if (isMobile) return false
+
+    // Check for Safari (non-Chromium)
+    const isSafari = /^((?!chrome|android).)*safari/i.test(userAgent)
+    if (isSafari) return false
+
     // Check for Chrome, Chromium, Brave, Edge (Chromium), Opera, Vivaldi, etc.
     // Exclude old Edge (EdgeHTML) which has "Edge/" not "Edg/"
     return /Chrome|Chromium|Brave|Edg|OPR|Vivaldi/.test(userAgent) && !/Edge\/|EdgeHTML|MSIE|Trident/.test(userAgent)
@@ -89,7 +107,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           setCollections(storedCollections)
         }
       } catch (e) {
-        console.error('Error loading guest data:', e)
+        // Error loading guest data
       }
       return
     }
@@ -124,25 +142,20 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
   // Check extension on mount (deferred to not block initial render)
   useEffect(() => {
-    console.log('[Dashboard] useEffect - setting up extension polling')
 
     // Use a ref to store the handler for stable reference across HMR
     const handlerRef = { current: null as ((event: any) => void) | null }
 
     handlerRef.current = (event: any) => {
-      console.log('Extension loaded event:', event.detail)
       if (event.detail?.installed) {
         setExtensionInstalled(true)
         if (event.detail?.extensionId) {
-          console.log('[Dashboard] Extension loaded, starting poll')
           // Clear any existing interval before starting a new one
           if (checkIntervalRef.current) {
-            console.log('[Dashboard] Clearing existing interval')
             clearInterval(checkIntervalRef.current)
           }
           checkExtensionStatus()
-          checkIntervalRef.current = setInterval(checkExtensionStatus, 100)
-          console.log('[Dashboard] Polling interval started (100ms)')
+          checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
         }
       }
     }
@@ -152,23 +165,19 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
     // Defer extension detection to not block initial render
     initTimerRef.current = setTimeout(async () => {
-      console.log('[Dashboard] initTimer fired')
       // Also check immediately (in case content script already ran)
       if (isExtensionInstalledViaContentScript()) {
-        console.log('Extension check: detected via content script (immediate check)')
         setExtensionInstalled(true)
         const extensionId = getExtensionId()
         if (extensionId) {
           // Delay status check slightly
           statusCheckTimerRef.current = setTimeout(() => {
-            console.log('[Dashboard] Starting poll from content script detection')
             // Clear any existing interval before starting a new one
             if (checkIntervalRef.current) {
               clearInterval(checkIntervalRef.current)
             }
             checkExtensionStatus()
-            checkIntervalRef.current = setInterval(checkExtensionStatus, 100)
-            console.log('[Dashboard] Polling interval started (100ms)')
+            checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
           }, 100)
         }
       }
@@ -203,7 +212,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
               filter: `user_id=eq.${user.id}`
             },
             () => {
-              console.log('Bookmarks changed, refreshing...')
               fetchFreshData()
             }
           )
@@ -218,7 +226,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
     // Listen for auth state changes and sync token to extension
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: any) => {
-      console.log('Auth state changed:', event, session?.access_token ? 'token present' : 'no token')
       if (event === 'SIGNED_IN') {
         setIsGuest(false)
         fetchFreshData()
@@ -237,7 +244,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     })
 
     return () => {
-      console.log('[Dashboard] useEffect cleanup - clearing all timers and intervals')
       // Clear all timeouts
       if (initTimerRef.current) clearTimeout(initTimerRef.current)
       if (statusCheckTimerRef.current) clearTimeout(statusCheckTimerRef.current)
@@ -265,7 +271,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         channelRef.current = null
       }
 
-      console.log('[Dashboard] All cleanup complete')
     }
   }, [])
 
@@ -281,7 +286,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     tokenSyncTimeoutRef.current = setTimeout(() => {
       if (!responded) {
         responded = true
-        console.log('Extension token sync: timeout (extension not installed)')
       }
     }, 500)
 
@@ -295,9 +299,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       if (tokenSyncTimeoutRef.current) clearTimeout(tokenSyncTimeoutRef.current)
 
       if (chrome.runtime.lastError) {
-        console.log('Extension not reachable')
       } else {
-        console.log('Auth token synced to extension')
       }
     })
   }
@@ -317,14 +319,13 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
     // First check: Content script marker (most reliable - set by content.js)
     if (isExtensionInstalledViaContentScript()) {
-      console.log('Extension check: detected via content script')
       setExtensionInstalled(true)
       const extensionId = getExtensionId()
       if (extensionId) {
         // Clear any existing interval before starting a new one
         if (checkIntervalRef.current) clearInterval(checkIntervalRef.current)
         checkExtensionStatus()
-        checkIntervalRef.current = setInterval(checkExtensionStatus, 100)
+        checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
       }
       return
     }
@@ -342,7 +343,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
     // If we don't have an extension ID at this point, we can't send a message
     if (!extensionId) {
-      console.log('Extension check: no extension ID available')
       setExtensionInstalled(false)
       return
     }
@@ -352,7 +352,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     extensionCheckTimeoutRef.current = setTimeout(() => {
       if (!responded) {
         responded = true
-        console.log('Extension check: timeout - extension not responding')
         setExtensionInstalled(false)
       }
     }, 1000)
@@ -363,15 +362,13 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       if (extensionCheckTimeoutRef.current) clearTimeout(extensionCheckTimeoutRef.current)
 
       if (chrome.runtime.lastError) {
-        console.log('Extension check: error -', chrome.runtime.lastError.message)
         setExtensionInstalled(false)
       } else if (response?.success) {
-        console.log('Extension check: success - extension is installed')
         setExtensionInstalled(true)
         // Clear any existing interval before starting a new one
         if (checkIntervalRef.current) clearInterval(checkIntervalRef.current)
         checkExtensionStatus()
-        checkIntervalRef.current = setInterval(checkExtensionStatus, 100)
+        checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
       } else {
         setExtensionInstalled(false)
       }
@@ -391,11 +388,8 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         setIsPaused(response.isPaused || false)
         setHasSavedSession(response.hasSavedSession || false)
         if (response.sessionTabs) {
-          console.log('[Dashboard] Received tabs:', response.sessionTabs.length, response.sessionTabs.map((t: any) => t.url))
           setSessionTabs(response.sessionTabs)
         }
-      } else {
-        console.log('[Dashboard] getStatus failed or no response')
       }
     })
   }
@@ -475,7 +469,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     chrome.runtime.sendMessage(extensionId, { action: 'openSavedTabs' }, (response: any) => {
       if (response?.success) {
         // Tabs opened but tracking not started
-        console.log('Saved tabs opened')
       }
     })
   }
@@ -488,19 +481,35 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
 
-      // Fetch tab_activity records, grouped by session date
+      // Get the latest tracking session for this user
+      const { data: sessionData } = await supabase
+        .from('tab_activity')
+        .select('tracking_session_id')
+        .eq('user_id', user.id)
+        .order('started_at', { ascending: false })
+        .limit(1)
+
+      if (!sessionData || sessionData.length === 0) {
+        setPreviousActivityData([])
+        setLoadingPreviousActivity(false)
+        return
+      }
+
+      const latestSessionId = sessionData[0].tracking_session_id
+
+      // Fetch only entries from the latest session
       const { data } = await supabase
         .from('tab_activity')
         .select('*')
         .eq('user_id', user.id)
-        .order('started_at', { ascending: false })
-        .limit(100)
+        .eq('tracking_session_id', latestSessionId)
+        .order('ended_at', { ascending: false })
 
       if (data) {
         setPreviousActivityData(data)
       }
     } catch (error) {
-      console.error('Error fetching previous activity:', error)
+      // Error fetching previous activity
     } finally {
       setLoadingPreviousActivity(false)
     }
@@ -546,7 +555,9 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           const updatedAll = stored.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b)
           guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
         }
-      } catch (e) { console.error('Error saving to localStorage:', e) }
+      } catch (e) {
+        // Error saving to localStorage
+      }
       fetchFreshData()
       return
     }
@@ -566,7 +577,9 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           const updatedAll = stored.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b)
           guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
         }
-      } catch (e) { console.error('Error saving to localStorage:', e) }
+      } catch (e) {
+        // Error saving to localStorage
+      }
       fetchFreshData()
       return
     }
@@ -585,7 +598,9 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           const updatedAll = stored.filter((b: Bookmark) => b.id !== id)
           guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
         }
-      } catch (e) { console.error('Error saving to localStorage:', e) }
+      } catch (e) {
+        // Error saving to localStorage
+      }
       fetchFreshData()
       return
     }
@@ -617,6 +632,35 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     }
   }
 
+  // Helper to generate better display titles
+  const getDisplayTitle = (url: string, title: string) => {
+    // If title is just the domain, try to generate something better
+    const domain = getDomain(url)
+    if (title === domain || title === url) {
+      try {
+        const urlObj = new URL(url)
+        // For YouTube videos, extract video ID and show "YouTube Video"
+        if (urlObj.hostname === 'www.youtube.com' || urlObj.hostname === 'youtube.com') {
+          if (urlObj.pathname === '/watch') {
+            const videoId = urlObj.searchParams.get('v')
+            return videoId ? `YouTube Video (${videoId.slice(0, 8)}...)` : 'YouTube Video'
+          }
+          if (urlObj.pathname.startsWith('/@')) {
+            return `YouTube - ${urlObj.pathname.slice(1)}`
+          }
+          if (urlObj.pathname.startsWith('/c/')) {
+            return `YouTube - ${urlObj.pathname.slice(3)}`
+          }
+        }
+        // For other sites, show a better title
+        return `${urlObj.hostname} - ${urlObj.pathname.slice(1) || 'home'}`
+      } catch {
+        return title || url
+      }
+    }
+    return title || url
+  }
+
   if (loading) {
     return (
       <DashboardLayout>
@@ -634,77 +678,81 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
   return (
     <DashboardLayout>
-      <div className="space-y-8">
-        <div className="flex justify-between items-start gap-6" style={{ position: 'relative' }}>
-          <div style={{ paddingTop: '5rem' }}>
-            <h1 className="text-5xl font-bold" style={{ color: 'var(--text-primary)' }}>
-              Welcome to WorkStack
+      <div className="space-y-6 md:space-y-8">
+        {/* Welcome Section - Mobile Optimized */}
+        <div className="text-center md:text-left md:flex md:justify-between md:items-start md:gap-6">
+          <div className="md:pt-20">
+            <h1 className="text-3xl md:text-5xl font-semibold" style={{ color: 'var(--text-primary)' }}>
+              {greeting}
             </h1>
-            <p className="mt-2 text-xl" style={{ color: 'var(--text-secondary)' }}>
+            <p className="mt-2 text-lg md:text-xl" style={{ color: 'var(--text-secondary)' }}>
               Your personal bookmark manager
-              {isGuest && (
-                <span className="ml-3 text-sm px-3 py-1 rounded-full" style={{ backgroundColor: 'rgba(251, 146, 60, 0.2)', color: '#ea580c' }}>
-                  Guest Mode - <a href="/login" className="underline hover:no-underline">Sign in</a> to save your data
-                </span>
-              )}
             </p>
+            {isGuest && (
+              <p className="mt-3">
+                <span className="text-xs md:text-sm px-3 py-1.5 rounded-full inline-block" style={{ backgroundColor: 'rgba(251, 146, 60, 0.2)', color: '#ea580c' }}>
+                  ⚠️ Guest Mode - <a href="/login" className="underline hover:no-underline font-medium">Sign in</a> to save your data
+                </span>
+              </p>
+            )}
           </div>
-          <div className="mt-6">
+          <div className="mt-4 md:mt-24 flex justify-center md:justify-end">
             <ChartWithToggle
               data={[
-                { label: 'Bookmarks', value: stats.total, color: '#3b82f6' },
-                { label: 'To Read', value: stats.unread, color: '#f97316' },
-                { label: 'Favorites', value: stats.favorites, color: '#eab308' },
-                { label: 'Collections', value: stats.collections, color: '#a855f7' },
+                { label: 'Bookmarks', value: stats.total, color: 'var(--color-sky)' },
+                { label: 'To Read', value: stats.unread, color: 'var(--color-amber)' },
+                { label: 'Favorites', value: stats.favorites, color: 'var(--color-orange)' },
+                { label: 'Collections', value: stats.collections, color: 'var(--color-purple)' },
               ]}
             />
           </div>
         </div>
 
-        {/* Track Activity Section */}
+        {/* Track Activity Section - Mobile Optimized */}
         <div>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
             {!isTracking ? (
               <>
                 <button
                   onClick={startTracking}
-                  className="px-4 py-2 rounded-lg font-medium transition-all duration-75 active:scale-90 hover:scale-105 flex items-center gap-2"
+                  className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
                   style={{ backgroundColor: '#22c55e', color: 'white', cursor: 'pointer' }}
                 >
                   <span>🎯 Track Activity</span>
                 </button>
                 {hasSavedSession && (
-                  <>
+                  <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                     <button
                       onClick={resumeActivity}
-                      className="px-4 py-2 rounded-lg font-medium transition-all duration-75 active:scale-90 hover:scale-105 flex items-center gap-2"
+                      className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
                       style={{ backgroundColor: '#3b82f6', color: 'white', cursor: 'pointer' }}
                     >
-                      <span>📂 Resume Previous Activity</span>
+                      <span>📂 Resume Activity</span>
                     </button>
                     <button
                       onClick={showPreviousActivity}
-                      className="px-4 py-2 rounded-lg font-medium transition-all duration-75 active:scale-90 hover:scale-105 flex items-center gap-2"
+                      className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
                       style={{ backgroundColor: '#8b5cf6', color: 'white', cursor: 'pointer' }}
                     >
-                      <span>📊 Show Previous Activity</span>
+                      <span>📊 View History</span>
                     </button>
-                  </>
+                  </div>
                 )}
                 {/* Extension status when not tracking */}
                 {extensionInstalled === true ? (
-                  <span className="text-sm font-semibold flex items-center gap-1" style={{ color: '#22c55e' }}>
-                    Extension ready
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ strokeWidth: 2.5 }}>
+                  <span className="text-sm font-semibold flex items-center gap-1 px-3 py-2 rounded-lg" style={{ color: '#22c55e' }}>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ strokeWidth: 2.5 }}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
                     </svg>
+                    <span className="hidden sm:inline">Extension ready</span>
+                    <span className="sm:hidden">Ready</span>
                   </span>
                 ) : isChromiumBrowser() ? (
                   <button
                     onClick={() => router.push('/extension')}
-                    className="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-75 active:scale-90 hover:scale-105 flex items-center gap-2"
+                    className="w-full sm:w-auto px-3 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
                     style={{
-                      background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)',
+                      backgroundColor: 'var(--color-purple)',
                       color: 'white',
                       cursor: 'pointer'
                     }}
@@ -712,58 +760,65 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                     </svg>
-                    Download Extension
+                    <span className="hidden sm:inline">Download Extension</span>
+                    <span className="sm:hidden">Get Extension</span>
                   </button>
                 ) : (
-                  <span className="text-sm font-medium flex items-center gap-2" style={{ color: '#f59e0b' }}>
+                  <span className="text-xs sm:text-sm font-medium flex items-center gap-2 px-3 py-2 rounded-lg" style={{ color: '#f59e0b', backgroundColor: 'rgba(245, 158, 11, 0.1)' }}>
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                     </svg>
-                    Extension not supported
+                    <span className="hidden sm:inline">Extension not supported</span>
+                    <span className="sm:hidden">Not supported</span>
                   </span>
                 )}
               </>
             ) : (
-              <>
+              <div className="flex flex-row gap-2 w-full sm:w-auto">
                 <button
                   onClick={isPaused ? resumeTracking : pauseTracking}
-                  className="px-4 py-2 rounded-lg font-medium transition-all duration-75 active:scale-90 hover:scale-105 flex items-center gap-2"
+                  className="flex-1 sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
                   style={{ backgroundColor: isPaused ? '#22c55e' : '#f59e0b', color: 'white', cursor: 'pointer' }}
                 >
                   {isPaused ? (
                     <>
                       <span className="w-2 h-2 rounded-full bg-white animate-pulse"></span>
-                      Resume
+                      <span>Resume</span>
                     </>
                   ) : (
-                    'Pause'
+                    <span>Pause</span>
                   )}
                 </button>
                 <button
                   onClick={stopTracking}
-                  className="px-4 py-2 rounded-lg font-medium transition-all duration-75 active:scale-90 hover:scale-105"
+                  className="flex-1 sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02]"
                   style={{ backgroundColor: '#ef4444', color: 'white', cursor: 'pointer' }}
                 >
                   Stop
                 </button>
-              </>
+                {isTracking && (
+                  <button
+                    onClick={() => router.push('/tracked-activity')}
+                    className="flex-1 sm:w-auto px-3 py-2.5 rounded-lg text-sm transition-all duration-75 active:scale-95"
+                    style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)', cursor: 'pointer' }}
+                  >
+                    View
+                  </button>
+                )}
+              </div>
             )}
 
             {isTracking && !isPaused && (
-              <span className="text-sm" style={{ color: '#22c55e' }}>● Recording</span>
+              <span className="text-xs sm:text-sm px-3 py-2 rounded-lg flex items-center gap-2" style={{ color: '#22c55e', backgroundColor: 'rgba(34, 197, 94, 0.1)' }}>
+                <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                Recording
+              </span>
             )}
             {isTracking && isPaused && (
-              <span className="text-sm" style={{ color: '#f59e0b' }}>●● Paused</span>
-            )}
-
-            {isTracking && (
-              <button
-                onClick={() => router.push('/tracked-activity')}
-                className="px-3 py-2 rounded-lg text-sm transition-all duration-75 active:scale-90"
-                style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)', cursor: 'pointer' }}
-              >
-                View Activity
-              </button>
+              <span className="text-xs sm:text-sm px-3 py-2 rounded-lg flex items-center gap-2" style={{ color: '#f59e0b', backgroundColor: 'rgba(245, 158, 11, 0.1)' }}>
+                <span className="w-2 h-2 rounded-full bg-orange-500"></span>
+                Paused
+              </span>
             )}
           </div>
 
@@ -779,9 +834,9 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                 </span>
               </div>
               <div className="overflow-y-auto" style={{ maxHeight: '340px' }}>
-                {sessionTabs.map((tab) => (
+                {sessionTabs.map((tab, index) => (
                   <div
-                    key={tab.url}
+                    key={`${tab.url}-${index}-${tab.duration_seconds}`}
                     className="p-3 border-b hover:bg-gray-50 transition-colors duration-150"
                     style={{ borderColor: 'var(--border-color)' }}
                   >
@@ -819,75 +874,83 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           )}
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card>
-            <CardContent className="p-6">
-              <p className="text-3xl font-bold text-blue-600">{stats.total}</p>
-              <p style={{ color: 'var(--text-secondary)' }}>Total Bookmarks</p>
+        {/* Stats - Mobile Optimized */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+          <Card className="hover:shadow-md transition-shadow">
+            <CardContent className="p-4 md:p-6 text-center">
+              <p className="text-2xl md:text-3xl font-semibold" style={{ color: 'var(--color-sky)' }}>{stats.total}</p>
+              <p className="text-xs md:text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Bookmarks</p>
             </CardContent>
           </Card>
-          <Card>
-            <CardContent className="p-6">
-              <p className="text-3xl font-bold text-orange-600">{stats.unread}</p>
-              <p style={{ color: 'var(--text-secondary)' }}>To Read</p>
+          <Card className="hover:shadow-md transition-shadow">
+            <CardContent className="p-4 md:p-6 text-center">
+              <p className="text-2xl md:text-3xl font-semibold" style={{ color: 'var(--color-amber)' }}>{stats.unread}</p>
+              <p className="text-xs md:text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>To Read</p>
             </CardContent>
           </Card>
-          <Card>
-            <CardContent className="p-6">
-              <p className="text-3xl font-bold text-yellow-600">{stats.favorites}</p>
-              <p style={{ color: 'var(--text-secondary)' }}>Favorites</p>
+          <Card className="hover:shadow-md transition-shadow">
+            <CardContent className="p-4 md:p-6 text-center">
+              <p className="text-2xl md:text-3xl font-semibold" style={{ color: 'var(--color-orange)' }}>{stats.favorites}</p>
+              <p className="text-xs md:text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Favorites</p>
             </CardContent>
           </Card>
-          <Card>
-            <CardContent className="p-6">
-              <p className="text-3xl font-bold text-purple-600">{stats.collections}</p>
-              <p style={{ color: 'var(--text-secondary)' }}>Collections</p>
+          <Card className="hover:shadow-md transition-shadow">
+            <CardContent className="p-4 md:p-6 text-center">
+              <p className="text-2xl md:text-3xl font-semibold" style={{ color: 'var(--color-purple)' }}>{stats.collections}</p>
+              <p className="text-xs md:text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Collections</p>
             </CardContent>
           </Card>
         </div>
 
-        {/* Quick Actions */}
+        {/* Quick Actions - Mobile Optimized */}
         <div>
-          <h2 className="text-xl font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Quick Actions</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4" style={{ color: 'var(--text-primary)' }}>Quick Actions</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <button
               onClick={() => router.push('/bookmarks')}
-              className="p-6 rounded-lg text-left hover:shadow-md transition-all duration-75 hover:scale-105 active:scale-95"
+              className="p-4 md:p-6 rounded-lg text-left hover:shadow-md transition-all duration-75 hover:scale-105 active:scale-95 flex flex-row md:flex-col items-center md:items-start gap-3 md:gap-0"
               style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', cursor: 'pointer' }}
             >
-              <span className="text-3xl">🔖</span>
-              <h3 className="font-semibold mt-2" style={{ color: 'var(--text-primary)' }}>Add Bookmark</h3>
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Save a new link</p>
+              <span className="text-2xl md:text-3xl">🔖</span>
+              <div className="text-left">
+                <h3 className="font-semibold text-sm md:text-base" style={{ color: 'var(--text-primary)' }}>Add Bookmark</h3>
+                <p className="text-xs md:text-sm hidden md:block" style={{ color: 'var(--text-secondary)' }}>Save a new link</p>
+              </div>
             </button>
             <button
               onClick={() => router.push('/reading-list')}
-              className="p-6 rounded-lg text-left hover:shadow-md transition-all duration-75 hover:scale-105 active:scale-95"
+              className="p-4 md:p-6 rounded-lg text-left hover:shadow-md transition-all duration-75 hover:scale-105 active:scale-95 flex flex-row md:flex-col items-center md:items-start gap-3 md:gap-0"
               style={{ backgroundColor: 'rgba(249, 115, 22, 0.1)', cursor: 'pointer' }}
             >
-              <span className="text-3xl">📚</span>
-              <h3 className="font-semibold mt-2" style={{ color: 'var(--text-primary)' }}>Reading List</h3>
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>{stats.unread} unread items</p>
+              <span className="text-2xl md:text-3xl">📚</span>
+              <div className="text-left">
+                <h3 className="font-semibold text-sm md:text-base" style={{ color: 'var(--text-primary)' }}>Reading List</h3>
+                <p className="text-xs md:text-sm hidden md:block" style={{ color: 'var(--text-secondary)' }}>{stats.unread} unread items</p>
+              </div>
             </button>
             <button
               onClick={() => router.push('/collections')}
-              className="p-6 rounded-lg text-left hover:shadow-md transition-all duration-75 hover:scale-105 active:scale-95"
+              className="p-4 md:p-6 rounded-lg text-left hover:shadow-md transition-all duration-75 hover:scale-105 active:scale-95 flex flex-row md:flex-col items-center md:items-start gap-3 md:gap-0"
               style={{ backgroundColor: 'rgba(168, 85, 247, 0.1)', cursor: 'pointer' }}
             >
-              <span className="text-3xl">📦</span>
-              <h3 className="font-semibold mt-2" style={{ color: 'var(--text-primary)' }}>Collections</h3>
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Organize & share</p>
+              <span className="text-2xl md:text-3xl">📦</span>
+              <div className="text-left">
+                <h3 className="font-semibold text-sm md:text-base" style={{ color: 'var(--text-primary)' }}>Collections</h3>
+                <p className="text-xs md:text-sm hidden md:block" style={{ color: 'var(--text-secondary)' }}>Organize & share</p>
+              </div>
             </button>
           </div>
         </div>
 
         {/* Recent Bookmarks */}
         <div>
-          <h2 className="text-xl font-semibold mb-4" style={{ color: 'var(--text-primary)' }}>Recent Bookmarks</h2>
+          <h2 className="text-lg md:text-xl font-semibold mb-3 md:mb-4" style={{ color: 'var(--text-primary)' }}>Recent Bookmarks</h2>
           {bookmarks.length === 0 ? (
             <Card>
-              <CardContent className="p-12 text-center" style={{ color: 'var(--text-secondary)' }}>
-                No bookmarks yet. Start by adding your first one!
+              <CardContent className="p-12 text-center">
+                <div className="text-5xl mb-4">🔖</div>
+                <p className="text-lg font-medium mb-2" style={{ color: 'var(--text-primary)' }}>No bookmarks yet</p>
+                <p style={{ color: 'var(--text-secondary)' }}>Your digital garden awaits — start saving your favorite links!</p>
               </CardContent>
             </Card>
           ) : (
@@ -975,9 +1038,9 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       </Modal>
 
       {/* Permission Modal */}
-      <Modal isOpen={showPermissionModal} onClose={() => setShowPermissionModal(false)} title="" size="lg"
+      <Modal isOpen={showPermissionModal} onClose={() => setShowPermissionModal(false)} title="" size="md"
         footer={
-          <div className="flex gap-3 pt-2">
+          <>
             <button
               onClick={() => setShowPermissionModal(false)}
               className="flex-1 px-5 py-3 rounded-xl font-semibold text-sm transition-all active:scale-95 hover:scale-105"
@@ -987,66 +1050,66 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
             </button>
             <button
               onClick={confirmStartTracking}
-              className="flex-1 px-5 py-3 rounded-xl font-bold text-base transition-all active:scale-95 hover:scale-105 hover:shadow-lg flex items-center justify-center gap-2"
-              style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)', color: 'white', cursor: 'pointer' }}
+              className="flex-1 px-5 py-3 rounded-xl font-bold text-base transition-colors flex items-center justify-center gap-2"
+              style={{ backgroundColor: 'var(--color-primary)', color: 'white', cursor: 'pointer' }}
             >
               <span>Allow Tracking</span>
               <span className="text-lg">→</span>
             </button>
-          </div>
+          </>
         }
       >
-        <div className="space-y-4 pb-4">
+        <div className="flex flex-col h-full justify-between gap-4">
           {/* Header with icon */}
           <div className="text-center">
-            <div className="inline-flex items-center justify-center w-20 h-20 rounded-full mb-3" style={{
-              background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
-              boxShadow: '0 8px 24px -8px rgba(139, 92, 246, 0.5)'
+            <div className="inline-flex items-center justify-center w-14 h-14 rounded-full mb-2" style={{
+              backgroundColor: 'rgba(13, 148, 136, 0.15)',
+              boxShadow: '0 4px 12px rgba(13, 148, 136, 0.2)'
             }}>
-              <span className="text-4xl">🔒</span>
+              <span className="text-3xl">🔒</span>
             </div>
-            <h2 className="text-xl font-bold" style={{ color: 'var(--text-primary)' }}>Allow Activity Tracking?</h2>
-            <p className="text-sm mt-2" style={{ color: 'var(--text-secondary)' }}>
+            <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Allow Activity Tracking?</h2>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
               WorkStack needs permission to track your browsing activity
             </p>
           </div>
 
           {/* What we track */}
-          <div className="p-4 rounded-xl" style={{ background: 'linear-gradient(135deg, rgba(34, 197, 94, 0.1) 0%, rgba(34, 197, 94, 0.05) 100%)', border: '1px solid rgba(34, 197, 94, 0.2)' }}>
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-8 h-8 rounded-full flex items-center justify-center text-sm" style={{ backgroundColor: 'rgba(34, 197, 94, 0.2)' }}>
-                <span style={{ color: '#22c55e' }}>✓</span>
+          <div className="p-3 rounded-xl" style={{ backgroundColor: 'rgba(101, 163, 13, 0.1)', border: '1px solid rgba(101, 163, 13, 0.2)' }}>
+            <div className="flex items-center gap-2 mb-1.5">
+              <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs" style={{ backgroundColor: 'rgba(101, 163, 13, 0.2)' }}>
+                <span style={{ color: 'var(--color-olive)' }}>✓</span>
               </div>
-              <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>What we'll do</span>
+              <span className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>What we'll do</span>
             </div>
-            <ul className="space-y-1.5 text-xs ml-10" style={{ color: 'var(--text-secondary)' }}>
-              <li>• Track which tabs you visit and for how long</li>
-              <li>• Help you understand your browsing habits</li>
-              <li>• All data is stored privately in your account</li>
+            <ul className="space-y-1 text-xs ml-8" style={{ color: 'var(--text-secondary)' }}>
+              <li>• Track tabs you visit and time spent</li>
+              <li>• Help understand your browsing habits</li>
+              <li>• All data stored privately in your account</li>
             </ul>
           </div>
 
           {/* Warning */}
-          <div className="p-4 rounded-xl flex gap-3" style={{ backgroundColor: 'rgba(251, 146, 60, 0.1)', border: '1px solid rgba(251, 146, 60, 0.3)' }}>
-            <span className="text-2xl flex-shrink-0">⚠️</span>
+          <div className="p-3 rounded-xl flex gap-2" style={{ backgroundColor: 'rgba(251, 146, 60, 0.1)', border: '1px solid rgba(251, 146, 60, 0.3)' }}>
+            <span className="text-lg flex-shrink-0">⚠️</span>
             <div>
-              <p className="text-sm font-semibold" style={{ color: '#ea580c' }}>Your activity will be tracked</p>
-              <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+              <p className="text-xs font-semibold" style={{ color: '#ea580c' }}>Your activity will be tracked</p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
                 The extension will track ALL websites you visit while tracking is enabled. You can stop tracking at any time.
               </p>
             </div>
           </div>
 
           {/* Data info */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="p-3 rounded-xl text-center" style={{ backgroundColor: 'var(--bg-secondary)' }}>
-              <span className="text-xl">✅</span>
-              <p className="text-xs font-semibold mt-1.5" style={{ color: 'var(--text-primary)' }}>We Collect</p>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="p-2 rounded-xl text-center" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+              <span className="text-lg">✅</span>
+              <p className="text-xs font-semibold mt-1" style={{ color: 'var(--text-primary)' }}>We Collect</p>
               <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>URL, title, domain, time</p>
             </div>
-            <div className="p-3 rounded-xl text-center" style={{ backgroundColor: 'var(--bg-secondary)' }}>
-              <span className="text-xl">🛡️</span>
-              <p className="text-xs font-semibold mt-1.5" style={{ color: 'var(--text-primary)' }}>We DON'T Collect</p>
+            <div className="p-2 rounded-xl text-center" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+              <span className="text-lg">🛡️</span>
+              <p className="text-xs font-semibold mt-1" style={{ color: 'var(--text-primary)' }}>We DON'T Collect</p>
               <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>Passwords, forms, personal info</p>
             </div>
           </div>
@@ -1072,9 +1135,9 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
               scrollbarWidth: 'thin',
               scrollbarColor: 'rgba(139, 92, 246, 0.3) transparent'
             }}>
-              {/* Group by domain and aggregate */}
+              {/* Group by full URL (each unique page/video shows separately) */}
               {(() => {
-                const groupedByDomain = new Map<string, {
+                const groupedByUrl = new Map<string, {
                   domain: string
                   url: string
                   title: string
@@ -1084,35 +1147,34 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                 }>()
 
                 previousActivityData.forEach(item => {
-                  const domain = item.domain
+                  const urlKey = item.url
 
-                  if (!groupedByDomain.has(domain)) {
-                    groupedByDomain.set(domain, {
-                      domain,
+                  if (!groupedByUrl.has(urlKey)) {
+                    groupedByUrl.set(urlKey, {
+                      domain: item.domain,
                       url: item.url,
                       title: item.title || item.url,
-                      totalSeconds: item.duration_seconds,
+                      totalSeconds: item.duration_seconds || 0,
                       visitCount: 1,
                       lastVisited: item.started_at
                     })
                   } else {
-                    const existing = groupedByDomain.get(domain)!
-                    existing.totalSeconds += item.duration_seconds
+                    const existing = groupedByUrl.get(urlKey)!
+                    existing.totalSeconds += item.duration_seconds || 0
                     existing.visitCount += 1
                     if (item.started_at > existing.lastVisited) {
                       existing.lastVisited = item.started_at
-                      existing.url = item.url
                       existing.title = item.title || item.url
                     }
                   }
                 })
 
                 // Sort by total time spent
-                const sorted = Array.from(groupedByDomain.values()).sort((a, b) => b.totalSeconds - a.totalSeconds)
+                const sorted = Array.from(groupedByUrl.values()).sort((a, b) => b.totalSeconds - a.totalSeconds)
 
                 return sorted.map((item) => (
                   <a
-                    key={item.domain}
+                    key={item.url}
                     href={item.url}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -1129,7 +1191,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                              {item.title}
+                              {getDisplayTitle(item.url, item.title)}
                             </p>
                             {item.visitCount > 1 && (
                               <span className="text-xs px-2 py-0.5 rounded-full flex-shrink-0" style={{ backgroundColor: 'rgba(139, 92, 246, 0.15)', color: '#8b5cf6' }}>

@@ -122,7 +122,7 @@ export function GuestSyncPrompt() {
         {/* Header with icon */}
         <div className="text-center">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-full mb-3" style={{
-            background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)'
+            backgroundColor: 'var(--color-primary)'
           }}>
             <span className="text-3xl">📦</span>
           </div>
@@ -162,8 +162,8 @@ export function GuestSyncPrompt() {
             <button
               onClick={handleSync}
               disabled={syncing}
-              className="flex-1 px-4 py-3 rounded-lg font-medium transition-all active:scale-95 flex items-center justify-center gap-2"
-              style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)', color: 'white', cursor: 'pointer' }}
+              className="flex-1 px-4 py-3 rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+              style={{ backgroundColor: 'var(--color-primary)', color: 'white', cursor: 'pointer' }}
             >
               {syncing ? (
                 <>

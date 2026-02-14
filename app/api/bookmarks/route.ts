@@ -11,14 +11,20 @@ import {
   handleOptionsRequest
 } from '@/lib/api-response'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
+// Validate required environment variables
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error('Missing required environment variables: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY must be set')
+}
+
 const GROQ_API_KEY = process.env.GROQ_API_KEY
 
 // Handle OPTIONS preflight request
-export async function OPTIONS() {
-  return handleOptionsRequest()
+export async function OPTIONS(request: NextRequest) {
+  return handleOptionsRequest(request)
 }
 
 export const POST = withApiHandler(async (request: NextRequest) => {
@@ -48,7 +54,7 @@ export const POST = withApiHandler(async (request: NextRequest) => {
   const sanitizedDescription = description?.trim() || ''
   const sanitizedNotes = notes?.trim() || ''
 
-  // Use service role key to bypass RLS
+  // Use service role key to bypass RLS, fallback to anon key if service key not available
   const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
 
   // Check if bookmark already exists for this user
@@ -82,7 +88,7 @@ export const POST = withApiHandler(async (request: NextRequest) => {
         .eq('id', existing.id)
         .single()
 
-      return corsHeaders(apiSuccess({ bookmark: updated, updated: true }, 'Bookmark already exists, added to collection'))
+      return corsHeaders(apiSuccess({ bookmark: updated, updated: true }, 'Bookmark already exists, added to collection'), request)
     }
 
     throw new ApiError('Bookmark already exists', 409, 'DUPLICATE')
@@ -134,5 +140,5 @@ export const POST = withApiHandler(async (request: NextRequest) => {
     }
   }
 
-  return corsHeaders(apiSuccess({ bookmark: data }, 'Bookmark created successfully', 201))
+  return corsHeaders(apiSuccess({ bookmark: data }, 'Bookmark created successfully', 201), request)
 })

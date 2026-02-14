@@ -159,7 +159,7 @@ export default function ExtensionPage() {
                 <button
                   onClick={() => router.push('/')}
                   className="px-6 py-3 rounded-xl font-medium transition-all duration-75 hover:scale-105 active:scale-95"
-                  style={{ backgroundColor: '#22c55e', color: 'white', cursor: 'pointer' }}
+                  style={{ color: '#22c55e', cursor: 'pointer' }}
                 >
                   Go to Dashboard
                 </button>

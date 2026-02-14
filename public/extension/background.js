@@ -1,21 +1,65 @@
 // WorkStack Tab Tracker - Background Service Worker
-// Tracks ONLY the currently active/visible tab
-// Time is only counted when a tab is actually visible on screen
+// ONE entry per tab per tracking session - URL/title updates as you navigate
 
 // State
 let isTracking = false
 let isPaused = false
+let isAutomaticMode = true  // Track ALL websites by default
 let userId = null
 let authToken = null
 let apiBaseUrl = 'http://localhost:3000'
 let hasSavedSession = false
+let trackingSessionId = null
 
-// Track the currently active tab (only ONE tab at a time)
+// Track the currently active tab
 let currentTabId = null
 let currentTabStartTime = null
 
-// Track all tabs with their accumulated times
-let tabTimes = new Map() // tabId -> { url, title, domain, totalTime, lastSyncTime }
+// Track all tabs with their data
+// tabId -> { url, title, domain, totalTime, lastSyncTime, dbRecordId }
+// totalTime = accumulated time ONLY when this tab was actively being viewed
+let tabTimes = new Map()
+
+// API call queue per tab
+let apiCallQueue = new Map()
+
+// Periodic sync interval
+let syncInterval = null
+
+// Keep-alive interval (prevents service worker termination)
+let keepAliveInterval = null
+
+// Process next API call in queue
+async function processNextApiCall(tabId) {
+  const queue = apiCallQueue.get(tabId)
+  if (!queue || queue.length === 0) return
+
+  const operation = queue[0]
+
+  try {
+    await operation()
+    apiCallQueue.set(tabId, queue.slice(1))
+    if (queue.length > 1) {
+      processNextApiCall(tabId)
+    }
+  } catch (error) {
+    apiCallQueue.set(tabId, queue.slice(1))
+    if (apiCallQueue.get(tabId)?.length > 0) {
+      processNextApiCall(tabId)
+    }
+  }
+}
+
+// Add API operation to queue
+function queueApiCall(tabId, operation) {
+  if (!apiCallQueue.has(tabId)) {
+    apiCallQueue.set(tabId, [])
+  }
+  apiCallQueue.get(tabId).push(operation)
+  if (apiCallQueue.get(tabId).length === 1) {
+    processNextApiCall(tabId)
+  }
+}
 
 // Initialize from storage
 chrome.storage.local.get(['isTracking', 'isPaused', 'userId', 'authToken', 'apiBaseUrl', 'savedSessionTabs'], (result) => {
@@ -25,6 +69,19 @@ chrome.storage.local.get(['isTracking', 'isPaused', 'userId', 'authToken', 'apiB
   if (result.authToken) authToken = result.authToken
   if (result.apiBaseUrl) apiBaseUrl = result.apiBaseUrl
   hasSavedSession = result.savedSessionTabs && result.savedSessionTabs.length > 0
+
+  // Restore tracking session if tracking was active
+  if (isTracking && userId && authToken) {
+    trackingSessionId = `${userId}_${Date.now()}`
+    startKeepAlive()
+
+    // Check extension status on load
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0] && tabs[0].url && !isSpecialUrl(tabs[0].url)) {
+        makeTabActive(tabs[0])
+      }
+    })
+  }
 })
 
 // Helper: Extract domain from URL
@@ -49,110 +106,134 @@ function isSpecialUrl(url) {
 
 // Helper: Get active tabs as array
 function getActiveTabsArray() {
-  return Array.from(tabTimes.values()).map(tab => ({
-    url: tab.url,
-    title: tab.title,
-    domain: tab.domain,
-    duration_seconds: Math.floor(tab.totalTime / 1000),
-    started_at: new Date(tab.firstSeen).toISOString()
-  }))
-}
-
-// Sync the current tab's time to server
-function syncCurrentTabTime() {
-  if (!currentTabId || !currentTabStartTime) return
-
-  const tabData = tabTimes.get(currentTabId)
-  if (!tabData) return
-
   const now = Date.now()
-  const sessionTime = now - currentTabStartTime
-  tabData.totalTime += sessionTime
-  tabData.lastSyncTime = now
-  currentTabStartTime = now
-
-  // Send to server
-  upsertTabToServer(tabData.url, tabData.title, tabData.domain, Math.floor(tabData.totalTime / 1000))
-}
-
-// Sync a specific tab's time (for when switching away or closing)
-function syncTabTime(tabId) {
-  const tabData = tabTimes.get(tabId)
-  if (!tabData) return
-
-  const now = Date.now()
-  // Calculate time since last sync
-  const timeSinceLastSync = tabData.lastSyncTime ? (now - tabData.lastSyncTime) : 0
-  tabData.totalTime += timeSinceLastSync
-  tabData.lastSyncTime = now
-
-  upsertTabToServer(tabData.url, tabData.title, tabData.domain, Math.floor(tabData.totalTime / 1000))
-}
-
-// Start tracking a new tab as the active one
-function makeTabActive(tab) {
-  if (isSpecialUrl(tab.url)) return
-
-  // First, sync the previous active tab if there was one
-  if (currentTabId && currentTabId !== tab.id) {
-    syncCurrentTabTime()
-  }
-
-  const domain = extractDomain(tab.url)
-  const now = Date.now()
-
-  // Check if we already have this tab tracked
-  if (tabTimes.has(tab.id)) {
-    const existing = tabTimes.get(tab.id)
-    // Update URL/title if changed
-    existing.url = tab.url
-    existing.title = tab.title || tab.url
-    existing.domain = domain
-    existing.lastSyncTime = now
-  } else {
-    // New tab
-    tabTimes.set(tab.id, {
-      url: tab.url,
-      title: tab.title || tab.url,
-      domain: domain,
-      totalTime: 0,
-      firstSeen: now,
-      lastSyncTime: now
-    })
-  }
-
-  // This is now the active tab
-  currentTabId = tab.id
-  currentTabStartTime = now
-
-  console.log(`[${new Date().toISOString().split('T')[1].split('.')[0]}] Active tab:`, tab.url)
-}
-
-// Stop tracking a tab (when it's closed)
-function stopTrackingTab(tabId) {
-  if (tabId === currentTabId) {
-    syncCurrentTabTime()
-    currentTabId = null
-    currentTabStartTime = null
-  }
-
-  // Remove from tracked tabs
-  const tabData = tabTimes.get(tabId)
-  if (tabData) {
-    // Final sync before removing
-    const wasCurrent = tabId === currentTabId
-    if (!wasCurrent) {
-      syncTabTime(tabId)
+  return Array.from(tabTimes.entries()).map(([tabId, tab]) => {
+    // Calculate total time including current active time for the active tab
+    let totalMs = tab.totalTime
+    // If this is the currently active tab, add time from currentTabStartTime
+    if (currentTabStartTime && tabId === currentTabId) {
+      totalMs += now - currentTabStartTime
     }
-    tabTimes.delete(tabId)
-    console.log('Tab closed:', tabData.url)
-  }
+    return {
+      url: tab.url,
+      title: tab.title,
+      domain: tab.domain,
+      duration_seconds: Math.floor(totalMs / 1000),
+      started_at: new Date(now - totalMs).toISOString()
+    }
+  })
 }
+
+// Sync tab data to server - creates or updates ONE entry per tab per session
+function syncTabToServer(tabId, isNewEntry = false) {
+  if (!authToken || !userId || !trackingSessionId) {
+    // Missing credentials, can't sync
+    return
+  }
+
+  const tabData = tabTimes.get(tabId)
+  if (!tabData) {
+    // Tab not found in map
+    return
+  }
+
+  // Capture current time before async operations
+  const now = Date.now()
+
+  // Calculate total time: accumulated totalTime + current active time since last sync
+  let totalMs = tabData.totalTime
+
+  // Only add current active time if this is the active tab
+  // and we haven't synced for this active session yet
+  if (tabId === currentTabId && currentTabStartTime) {
+    const timeSinceLastSync = now - currentTabStartTime
+    totalMs += timeSinceLastSync
+  }
+
+  const totalSeconds = Math.floor(totalMs / 1000)
+
+  queueApiCall(tabId, async () => {
+    const data = JSON.stringify({
+      user_id: userId,
+      url: tabData.url,
+      title: tabData.title,
+      domain: tabData.domain,
+      tracking_session_id: trackingSessionId,
+      tab_id: String(tabId),
+      is_new_entry: isNewEntry,
+      elapsed_seconds: totalSeconds
+    })
+
+    let response
+    try {
+      response = await fetch(`${apiBaseUrl}/api/activity/sync-tab`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: data
+      })
+    } catch (error) {
+      // Network error - will retry on next sync interval
+      return
+    }
+
+    const result = await response.json()
+
+    if (result.success && result.record_id) {
+      // Update the tab data in the map (get fresh reference)
+      const updatedTab = tabTimes.get(tabId)
+      if (updatedTab) {
+        updatedTab.dbRecordId = result.record_id
+        // Update totalTime to reflect the synced value
+        updatedTab.totalTime = totalMs
+        // Update lastSyncTime
+        updatedTab.lastSyncTime = now
+        // Reset currentTabStartTime for the active tab
+        if (tabId === currentTabId) {
+          currentTabStartTime = now
+        }
+      }
+    }
+  })
+}
+
+// Keep service worker alive
+function startKeepAlive() {
+  if (keepAliveInterval) clearInterval(keepAliveInterval)
+
+  // Set up alarm for periodic sync (more reliable than setInterval)
+  chrome.alarms.create('keepAlive', { periodInMinutes: 1 })
+
+  // Use setInterval as additional keep-alive
+  keepAliveInterval = setInterval(() => {
+    if (isTracking) {
+      // Ping to keep service worker alive
+      chrome.storage.local.set({ lastHeartbeat: Date.now() })
+    }
+  }, 15000) // Every 15 seconds
+}
+
+function stopKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval)
+    keepAliveInterval = null
+  }
+  chrome.alarms.clearAll()
+}
+
+// Alarm listener for keep-alive sync
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'keepAlive' && isTracking && !isPaused && currentTabId) {
+    syncTabToServer(currentTabId)
+  }
+})
 
 // Listen for messages from website
 chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => {
   if (request.action === 'startTracking') {
-    startTracking(request.userId, request.authToken, request.apiBaseUrl)
+    startTracking(request.userId, request.authToken, request.apiBaseUrl, request.isAutomaticMode)
     sendResponse({ success: true })
   } else if (request.action === 'stopTracking') {
     stopTracking()
@@ -169,17 +250,27 @@ chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => 
   } else if (request.action === 'openSavedTabs') {
     openSavedTabs()
     sendResponse({ success: true })
+  } else if (request.action === 'toggleAutomaticMode') {
+    toggleAutomaticMode()
+    sendResponse({ success: true, isAutomaticMode })
+  } else if (request.action === 'setTrackingMode') {
+    if (request.isAutomaticMode !== null) {
+      isAutomaticMode = request.isAutomaticMode
+      chrome.storage.local.set({ isAutomaticMode })
+    }
+    sendResponse({ success: true, isAutomaticMode })
   } else if (request.action === 'getStatus') {
     const tabs = getActiveTabsArray()
     sendResponse({
       isTracking,
       isPaused,
       hasSavedSession,
+      isAutomaticMode,
       sessionTabs: tabs
     })
     return true
   } else if (request.action === 'ping') {
-    sendResponse({ success: true, version: '3.1.0' })
+    sendResponse({ success: true, version: '4.3.0' })
   } else if (request.action === 'openUrls') {
     openUrls(request.urls)
     sendResponse({ success: true })
@@ -251,6 +342,9 @@ function startTracking(newUserId, newAuthToken, newApiBaseUrl) {
   isTracking = true
   isPaused = false
 
+  // Generate unique tracking session ID
+  trackingSessionId = `${userId}_${Date.now()}`
+
   chrome.storage.local.set({
     isTracking,
     userId,
@@ -261,11 +355,21 @@ function startTracking(newUserId, newAuthToken, newApiBaseUrl) {
   chrome.action.setBadgeText({ text: 'ON' })
   chrome.action.setBadgeBackgroundColor({ color: '#22c55e' })
 
-  // Clear existing data
-  clearTrackedActivity()
+  // Clear previous session data
   tabTimes.clear()
   currentTabId = null
   currentTabStartTime = null
+
+  // Set up periodic sync every 10 seconds to update time for active tab
+  if (syncInterval) clearInterval(syncInterval)
+  syncInterval = setInterval(() => {
+    if (isTracking && !isPaused && currentTabId) {
+      syncTabToServer(currentTabId)
+    }
+  }, 10000) // Sync every 10 seconds
+
+  // Start keep-alive mechanism
+  startKeepAlive()
 
   // Track the currently active tab immediately
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -273,48 +377,59 @@ function startTracking(newUserId, newAuthToken, newApiBaseUrl) {
       makeTabActive(tabs[0])
     }
   })
-
-  console.log('Tracking started - only active tab is tracked')
 }
 
 function stopTracking() {
-  // Final sync before stopping
-  syncCurrentTabTime()
-
   isTracking = false
   isPaused = false
 
-  // Save current tabs for resume
-  const currentTabs = getActiveTabsArray()
-  if (currentTabs.length > 0) {
-    hasSavedSession = true
-    chrome.storage.local.set({
-      savedSessionTabs: currentTabs,
-      savedSessionAt: new Date().toISOString()
-    })
-  } else {
-    hasSavedSession = false
+  // Clear the periodic sync interval
+  if (syncInterval) {
+    clearInterval(syncInterval)
+    syncInterval = null
   }
 
-  currentTabId = null
-  currentTabStartTime = null
-  tabTimes.clear()
+  // Stop keep-alive
+  stopKeepAlive()
 
-  chrome.storage.local.set({ isTracking: false, isPaused: false })
-  chrome.action.setBadgeText({ text: '' })
+  // Accumulate time for the active tab before stopping
+  if (currentTabId && currentTabStartTime && tabTimes.has(currentTabId)) {
+    const activeTab = tabTimes.get(currentTabId)
+    if (activeTab) {
+      activeTab.totalTime += Date.now() - currentTabStartTime
+    }
+    // Do a final sync for the active tab
+    syncTabToServer(currentTabId)
+  }
 
-  console.log('Tracking stopped')
+  // Small delay to allow final sync to complete
+  setTimeout(() => {
+    // Save current tabs for resume
+    const currentTabs = getActiveTabsArray()
+    if (currentTabs.length > 0) {
+      hasSavedSession = true
+      chrome.storage.local.set({
+        savedSessionTabs: currentTabs,
+        savedSessionAt: new Date().toISOString()
+      })
+    } else {
+      hasSavedSession = false
+    }
+
+    currentTabId = null
+    currentTabStartTime = null
+    tabTimes.clear()
+
+    chrome.storage.local.set({ isTracking: false, isPaused: false })
+    chrome.action.setBadgeText({ text: '' })
+  }, 500)
 }
 
 function pauseTracking() {
-  // Sync current tab before pausing
-  syncCurrentTabTime()
-
   isPaused = true
   chrome.storage.local.set({ isPaused: true })
   chrome.action.setBadgeText({ text: 'PAUSED' })
   chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' })
-  console.log('Tracking paused')
 }
 
 function resumeTracking() {
@@ -329,8 +444,6 @@ function resumeTracking() {
       makeTabActive(tabs[0])
     }
   })
-
-  console.log('Tracking resumed')
 }
 
 function resumeActivity() {
@@ -351,7 +464,6 @@ function resumeActivity() {
     if (savedTabs.length > 0) {
       const uniqueUrls = [...new Set(savedTabs.map(tab => tab.url))]
       chrome.windows.create({ url: uniqueUrls, focused: true })
-      console.log('Activity resumed with', uniqueUrls.length, 'tabs')
     }
   })
 }
@@ -363,7 +475,6 @@ function openSavedTabs() {
 
     const uniqueUrls = [...new Set(savedTabs.map(tab => tab.url))]
     chrome.windows.create({ url: uniqueUrls, focused: true })
-    console.log('Opening', uniqueUrls.length, 'saved tabs')
   })
 }
 
@@ -371,66 +482,11 @@ function openUrls(urls) {
   if (!urls || urls.length === 0) return
   const uniqueUrls = [...new Set(urls)]
   chrome.windows.create({ url: uniqueUrls, focused: true })
-  console.log('Opening', uniqueUrls.length, 'tabs from collection')
-}
-
-// Upsert tab to server
-function upsertTabToServer(url, title, domain, durationSeconds) {
-  if (!authToken || !userId) return
-
-  const data = JSON.stringify({
-    user_id: userId,
-    url,
-    title,
-    domain,
-    duration_seconds: durationSeconds,
-    started_at: new Date().toISOString()
-  })
-
-  fetch(`${apiBaseUrl}/api/activity/upsert`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${authToken}`
-    },
-    body: data
-  }).catch(err => console.error('Failed to upsert tab:', err))
-}
-
-// Remove tab from server
-function removeTabFromServer(url) {
-  if (!authToken || !userId) return
-
-  fetch(`${apiBaseUrl}/api/activity/remove`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${authToken}`
-    },
-    body: JSON.stringify({
-      user_id: userId,
-      url
-    })
-  }).catch(err => console.error('Failed to remove tab:', err))
-}
-
-// Clear all tracked activity for this user
-function clearTrackedActivity() {
-  if (!authToken || !userId) return
-
-  fetch(`${apiBaseUrl}/api/activity/clear`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${authToken}`
-    },
-    body: JSON.stringify({ user_id: userId })
-  }).catch(err => console.error('Failed to clear activity:', err))
 }
 
 // ========== EVENT LISTENERS ==========
 
-// When tab is activated (switched to) - THIS IS THE KEY EVENT
+// When tab is activated (switched to)
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   if (!isTracking || isPaused) return
 
@@ -440,31 +496,53 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
       makeTabActive(tab)
     }
   } catch (error) {
-    console.error('Error on tab activated:', error)
+    // Error on tab activated, continue
   }
 })
 
-// When tab is updated (URL changes or page loads)
+// When tab is updated (URL changes or title changes)
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!isTracking || isPaused) return
   if (isSpecialUrl(tab.url)) return
+  if (!tab.url) return
 
-  // Only care if this is the current active tab
-  if (tabId !== currentTabId) return
+  const tabData = tabTimes.get(tabId)
+  if (!tabData) return
 
-  // If URL changed or page is loading, update our tracking
-  if (changeInfo.status === 'loading' || changeInfo.url) {
-    makeTabActive(tab)
+  const oldUrl = tabData.url
+  const newUrl = tab.url
+  const domain = extractDomain(newUrl)
+
+  // If URL changed
+  if (oldUrl !== newUrl) {
+    tabData.url = newUrl
+    tabData.domain = domain
+    tabData.lastSyncTime = Date.now()
+
+    const currentTitle = (tab.title && tab.title !== newUrl) ? tab.title : newUrl
+    tabData.title = currentTitle
+
+    syncTabToServer(tabId)
+  } else if (changeInfo.title && tab.title) {
+    // Just title changed
+    tabData.title = tab.title
+    syncTabToServer(tabId)
   }
 })
 
-// When tab is removed (closed)
+// When tab is closed
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (!isTracking || isPaused) return
-  stopTrackingTab(tabId)
+
+  if (tabId === currentTabId) {
+    currentTabId = null
+    currentTabStartTime = null
+  }
+
+  tabTimes.delete(tabId)
 })
 
-// When window is focused (user switches back to browser)
+// When window is focused
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (!isTracking || isPaused || windowId === chrome.windows.WINDOW_ID_NONE) return
 
@@ -475,20 +553,52 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
   })
 })
 
-// Sync time to server every 10 seconds (only for the active tab)
-setInterval(() => {
-  if (isTracking && !isPaused && currentTabId) {
-    syncCurrentTabTime()
-  }
-}, 10000)
+// Start tracking a tab as active
+function makeTabActive(tab) {
+  // Don't track special URLs (chrome://, etc.)
+  if (isSpecialUrl(tab.url)) return
 
-// On extension startup - clear stale data
-chrome.runtime.onStartup.addListener(() => {
-  if (userId && authToken) {
-    clearTrackedActivity()
+  // In manual mode, only track workstack.vercel.app
+  if (!isAutomaticMode && extractDomain(tab.url) !== 'workstack.vercel.app') return
+
+  const domain = extractDomain(tab.url)
+  const now = Date.now()
+  const isNewTab = !tabTimes.has(tab.id)
+
+  // Before switching tabs, accumulate time spent on previous tab
+  if (currentTabId && currentTabStartTime && currentTabId !== tab.id) {
+    const prevTab = tabTimes.get(currentTabId)
+    if (prevTab) {
+      const timeSpent = now - currentTabStartTime
+      prevTab.totalTime += timeSpent
+      prevTab.lastSyncTime = now
+    }
   }
-})
+
+  if (tabTimes.has(tab.id)) {
+    const existing = tabTimes.get(tab.id)
+    existing.url = tab.url
+    existing.domain = domain
+    existing.title = tab.title || tab.url
+    existing.lastSyncTime = now
+  } else {
+    tabTimes.set(tab.id, {
+      url: tab.url,
+      title: tab.title || tab.url,
+      domain: domain,
+      totalTime: 0,
+      lastSyncTime: now,
+      dbRecordId: null
+    })
+    apiCallQueue.set(tab.id, [])
+  }
+
+  currentTabId = tab.id
+  currentTabStartTime = now
+
+  syncTabToServer(tab.id, isNewTab)
+}
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('WorkStack Tab Tracker v3.1.0 installed - Active tab tracking mode')
+  // Extension installed
 })

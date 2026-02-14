@@ -226,11 +226,11 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       const bookmarkPromises = uniqueCollections.map(async (collection: Collection) => {
         const { data } = await supabase
           .from('collection_bookmarks')
-          .select('bookmark_id, bookmarks(*)')
+          .select('bookmark_id, bookmarks(*), added_by')
           .eq('collection_id', collection.id)
           .limit(10) // Fetch more to account for removed ones
 
-        let bookmarks = data?.map((jb: { bookmarks: Bookmark }) => jb.bookmarks).filter(Boolean) || []
+        let bookmarks = data?.map((jb: any) => ({ ...jb.bookmarks, added_by: jb.added_by })).filter(Boolean) || []
 
         // If not the owner, filter out bookmarks the user has removed from their view
         if (collection.user_id !== user.id) {
@@ -345,11 +345,11 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       const bookmarkPromises = uniqueCollections.map(async (collection: Collection) => {
         const { data } = await supabase
           .from('collection_bookmarks')
-          .select('bookmark_id, bookmarks(*)')
+          .select('bookmark_id, bookmarks(*), added_by')
           .eq('collection_id', collection.id)
           .limit(10) // Fetch more to account for removed ones
 
-        let bookmarks = data?.map((jb: { bookmarks: Bookmark }) => jb.bookmarks).filter(Boolean) || []
+        let bookmarks = data?.map((jb: any) => ({ ...jb.bookmarks, added_by: jb.added_by })).filter(Boolean) || []
 
         // If not the owner, filter out bookmarks the user has removed from their view
         if (collection.user_id !== user.id) {
@@ -855,11 +855,27 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     }
 
     // Add all selected bookmarks to collection using junction table
-    for (const bookmarkId of bookmarkIds) {
-      await supabase.from('collection_bookmarks').insert({
-        collection_id: collectionId,
-        bookmark_id: bookmarkId
-      })
+    // Get current user for added_by field
+    const { data: { user } } = await supabase.auth.getUser()
+
+    const insertResults = await Promise.allSettled(
+      Array.from(bookmarkIds).map(bookmarkId =>
+        supabase
+          .from('collection_bookmarks')
+          .insert({
+            collection_id: collectionId,
+            bookmark_id: bookmarkId,
+            added_by: user?.id
+          })
+          .select()
+          .single()
+      )
+    )
+
+    // Check for any failed inserts
+    const failures = insertResults.filter(r => r.status === 'rejected')
+    if (failures.length > 0) {
+      console.error('Some bookmarks failed to add to collection:', failures)
     }
 
     // Invalidate cache
@@ -1552,9 +1568,9 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                     </p>
 
                     <div className="flex gap-2 flex-wrap mb-4">
-                      {bookmarks.slice(0, 3).map(b => (
+                      {bookmarks.slice(0, 3).map((b, index) => (
                         <a
-                          key={b.id}
+                          key={b.id || `bookmark-${index}`}
                           href={b.url}
                           target="_blank"
                           rel="noopener noreferrer"
@@ -1688,12 +1704,14 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
         isOpen={addModalOpen}
         onClose={() => { setAddModalOpen(false); setShowNewBookmarkForm(false); setNewBookmarkUrl(''); setNewBookmarkTitle(''); setSelectedBookmarkIds(new Set()); setBookmarkFilterType('all'); setBookmarkSearchQuery(''); }}
         title="Add Bookmark"
+        size="lg"
         footer={
           !showNewBookmarkForm ? (
-            <div className="flex gap-3">
+            <>
               <button
+                key="cancel"
                 onClick={() => setAddModalOpen(false)}
-                className="flex-1 px-4 py-2.5 rounded-xl font-medium transition-all duration-200 border hover:shadow-md"
+                className="flex-1 px-3 py-3 rounded-xl font-medium transition-all duration-200 border"
                 style={{
                   backgroundColor: 'transparent',
                   borderColor: 'var(--border-color)',
@@ -1712,9 +1730,10 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                 Cancel
               </button>
               <button
+                key="save"
                 onClick={() => selectedCollection && addToCollection(selectedBookmarkIds, selectedCollection.id)}
                 disabled={selectedBookmarkIds.size === 0 || !selectedCollection}
-                className="flex-1 px-4 py-2.5 rounded-xl font-medium text-white transition-all duration-200 hover:shadow-lg hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                className="flex-1 px-3 py-3 rounded-xl font-medium text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{
                   background: selectedBookmarkIds.size > 0 ? 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)' : 'var(--bg-secondary)',
                   color: selectedBookmarkIds.size > 0 ? 'white' : 'var(--text-secondary)',
@@ -1723,7 +1742,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
               >
                 Save {selectedBookmarkIds.size > 0 && `(${selectedBookmarkIds.size})`}
               </button>
-            </div>
+            </>
           ) : null
         }
       >

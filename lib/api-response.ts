@@ -176,19 +176,51 @@ export async function getUserFromToken(authHeader: string | null) {
 /**
  * Helper to add CORS headers for extension requests
  * Shared CORS helper for all API routes
+ * Only allows requests from same origin, localhost (dev), and chrome extensions
  */
-export function corsHeaders(response: NextResponse): NextResponse {
-  response.headers.set('Access-Control-Allow-Origin', '*')
+export function corsHeaders(response: NextResponse, request?: NextRequest): NextResponse {
+  const origin = request?.headers.get('origin')
+
+  // Allowed origins patterns
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
+  const allowedPatterns = [
+    // Same origin
+    appUrl ? (appUrl.startsWith('http') ? appUrl : `https://${appUrl}`) : null,
+    // Development localhost
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    // Chrome extensions (any)
+    'chrome-extension://',
+  ].filter(Boolean) as string[]
+
+  // Check if origin is allowed
+  let isAllowed = false
+  if (origin) {
+    isAllowed = allowedPatterns.some(pattern => {
+      if (pattern.endsWith('://')) {
+        // Pattern ends with :// means we allow any sub-origin (like chrome-extension://)
+        return origin.startsWith(pattern)
+      }
+      return origin === pattern
+    })
+  }
+
+  // Only set CORS header for allowed origins
+  if (isAllowed && origin) {
+    response.headers.set('Access-Control-Allow-Origin', origin)
+  }
+
   response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
   response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  response.headers.set('Access-Control-Allow-Credentials', 'true')
   return response
 }
 
 /**
  * Handle OPTIONS preflight request - can be exported directly from API routes
  */
-export function handleOptionsRequest(): NextResponse {
-  return corsHeaders(new NextResponse(null, { status: 200 }))
+export function handleOptionsRequest(request?: NextRequest): NextResponse {
+  return corsHeaders(new NextResponse(null, { status: 200 }), request)
 }
 
 /**

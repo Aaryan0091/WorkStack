@@ -68,7 +68,13 @@ export function getBrowser(): Browser {
 }
 
 export function isChromiumBased(): boolean {
+  // Mobile devices don't support Chrome extensions
+  if (isMobile()) return false
+
+  // Safari is not Chromium-based
   const browser = getBrowser()
+  if (browser === 'safari') return false
+
   return browser === 'chrome' || browser === 'edge' || browser === 'brave'
 }
 

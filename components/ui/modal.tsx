@@ -1,6 +1,8 @@
 'use client'
 
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { X } from 'lucide-react'
 
 interface ModalProps {
   isOpen: boolean
@@ -8,11 +10,12 @@ interface ModalProps {
   title: string
   children: React.ReactNode
   footer?: React.ReactNode
-  size?: 'md' | 'lg'
+  size?: 'sm' | 'md' | 'lg'
 }
 
 export function Modal({ isOpen, onClose, title, children, footer, size = 'md' }: ModalProps) {
   const modalRef = useRef<HTMLDivElement>(null)
+  const [isAnimating, setIsAnimating] = useState(false)
 
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -22,6 +25,10 @@ export function Modal({ isOpen, onClose, title, children, footer, size = 'md' }:
     if (isOpen) {
       document.addEventListener('keydown', handleEscape)
       document.body.style.overflow = 'hidden'
+      // Small delay to trigger animation
+      requestAnimationFrame(() => setIsAnimating(true))
+    } else {
+      setIsAnimating(false)
     }
 
     return () => {
@@ -32,34 +39,57 @@ export function Modal({ isOpen, onClose, title, children, footer, size = 'md' }:
 
   if (!isOpen) return null
 
-  const sizeClasses = size === 'lg' ? 'max-w-lg min-h-[70vh] max-h-[95vh]' : 'max-w-md max-h-[70vh]'
+  const sizeClasses = size === 'lg' ? 'max-w-lg' : size === 'sm' ? 'max-w-sm' : 'max-w-md'
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <div
+        className={`absolute inset-0 transition-opacity duration-200 ${
+          isAnimating ? 'opacity-100' : 'opacity-0'
+        }`}
+        style={{ backgroundColor: 'rgba(0, 0, 0, 0.4)' }}
+        onClick={onClose}
+      />
+      {/* Modal Content */}
       <div
         ref={modalRef}
-        className={`relative bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full mx-4 flex flex-col overflow-hidden ${sizeClasses}`}
+        className={`relative w-full flex flex-col rounded-xl transition-all duration-200 ${sizeClasses} ${
+          isAnimating ? 'scale-100 opacity-100' : 'scale-95 opacity-0'
+        }`}
+        style={{
+          backgroundColor: 'var(--bg-primary)',
+          border: '1px solid var(--border-color)',
+          boxShadow: '0 10px 40px rgba(0,0,0,0.15)',
+          maxHeight: '90vh'
+        }}
       >
-        <div className="flex items-center justify-between px-4 py-3 flex-shrink-0">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">{title}</h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors p-1"
-            style={{ cursor: 'pointer' }}
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+        {/* Header */}
+        {title && (
+          <div className="flex items-center justify-between px-5 py-4 shrink-0 border-b" style={{ borderColor: 'var(--border-color)' }}>
+            <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>{title}</h2>
+            <button
+              onClick={onClose}
+              className="p-1 rounded-md transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
+              style={{ color: 'var(--text-secondary)', cursor: 'pointer' }}
+              aria-label="Close modal"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+        {/* Body */}
+        <div className="p-5 flex-1 overflow-y-auto min-h-0">
+          {children}
         </div>
-        <div className="p-5 overflow-y-auto" style={{ paddingBottom: footer ? '70px' : '1.25rem' }}>{children}</div>
+        {/* Footer */}
         {footer && (
-          <div className="absolute bottom-0 left-0 right-0 px-5 py-3 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-b-lg">
+          <div className="shrink-0 px-5 py-4 border-t flex flex-row items-stretch gap-3" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}>
             {footer}
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

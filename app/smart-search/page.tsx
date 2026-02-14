@@ -204,7 +204,7 @@ export default function SmartSearchPage() {
 
   return (
     <DashboardLayout>
-      <div className="max-w-6xl">
+      <div className="w-full">
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-3xl font-bold mb-2" style={{ color: 'var(--text-primary)' }}>
@@ -346,7 +346,42 @@ export default function SmartSearchPage() {
 
             {/* Results Grid */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {results.map((bookmark) => (
+              {/* Loading skeletons */}
+              {loading && (
+                <>
+                  {[1, 2, 3, 4, 5, 6].map((i) => (
+                    <div
+                      key={`skeleton-${i}`}
+                      className="rounded-xl shadow-md p-4 animate-pulse"
+                      style={{ backgroundColor: 'var(--bg-primary)' }}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div
+                          className="w-8 h-8 rounded flex-shrink-0"
+                          style={{ backgroundColor: 'var(--bg-secondary)' }}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div
+                            className="h-5 mb-1 rounded w-3/4 mb-2"
+                            style={{ backgroundColor: 'var(--bg-secondary)' }}
+                          />
+                          <div
+                            className="h-4 mb-2 rounded w-1/2"
+                            style={{ backgroundColor: 'var(--bg-secondary)' }}
+                          />
+                          <div
+                            className="h-4 rounded w-full"
+                            style={{ backgroundColor: 'var(--bg-secondary)' }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Actual results */}
+              {!loading && results.map((bookmark) => (
                 <div
                   key={bookmark.id}
                   onClick={() => openBookmark(bookmark.url)}

@@ -1,13 +1,19 @@
 // WorkStack Extension Content Script
-  // This script runs on workstack pages to enable communication between the page and extension
+// This script runs on workstack pages to enable communication between the page and extension
 
-  (function() {
+(function() {
     'use strict'
 
     // Get extension ID
     var extensionId = null
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
       extensionId = chrome.runtime.id
+    }
+
+    // Set extension ID on window for detection
+    if (extensionId) {
+      window.workStackExtensionId = extensionId
+      window.workStackExtensionInstalled = true
     }
 
     // Listen for requests from the page

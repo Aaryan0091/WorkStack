@@ -4,12 +4,11 @@ import { NextRequest, NextResponse } from 'next/server'
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
 
-// Upsert API - Update existing entry or create new one
-// This accumulates time across multiple tracking sessions
+// Sync tab API - ONE entry per tab per tracking session
+// Uses tracking_session_id + tab_id to uniquely identify each tab's entry
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    const { user_id, url, title, domain, duration_seconds = 0 } = body
+    const { user_id, url, title, domain, tracking_session_id, tab_id, is_new_entry, elapsed_seconds } = await request.json()
 
     if (!user_id || !url) {
       return NextResponse.json({ error: 'Missing user_id or url' }, { status: 400 })
@@ -17,33 +16,27 @@ export async function POST(request: NextRequest) {
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Look for existing entry with this URL
+    // Look for existing entry with same session_id + tab_id
     const { data: existingEntry, error: fetchError } = await supabase
       .from('tab_activity')
       .select('*')
       .eq('user_id', user_id)
-      .eq('url', url)
-      .order('created_at', { ascending: false })
-      .limit(1)
+      .eq('tracking_session_id', tracking_session_id)
+      .eq('tab_id', String(tab_id))
       .maybeSingle()
 
-    if (fetchError && fetchError.code !== 'PGRST116') {
-      console.error('[Upsert API] Fetch error:', fetchError)
-    }
-
-    const titleToUse = (title && title.trim().length > 0) ? title.trim() : url
-
     if (existingEntry) {
-      // Entry exists - UPDATE it (add time, update title if provided)
-      const newTotalTime = (existingEntry.duration_seconds || 0) + duration_seconds
+      // Entry exists - UPDATE it with new URL, title, and REPLACE duration
+      // elapsed_seconds is the total time since tab was first seen, not an increment
+      const newDuration = elapsed_seconds || 0
 
       const { error: updateError } = await supabase
         .from('tab_activity')
         .update({
-          title: titleToUse,
+          url: url,
+          title: title || url,
           domain: domain || existingEntry.domain,
-          duration_seconds: newTotalTime,
-          ended_at: new Date().toISOString()
+          duration_seconds: newDuration
         })
         .eq('id', existingEntry.id)
 
@@ -54,7 +47,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         action: 'updated',
-        record_id: existingEntry.id
+        record_id: existingEntry.id,
+        duration_seconds: newDuration
       })
     }
 
@@ -64,11 +58,12 @@ export async function POST(request: NextRequest) {
       .insert({
         user_id,
         url,
-        title: titleToUse,
+        title: title || url,
         domain,
-        duration_seconds,
-        started_at: new Date().toISOString(),
-        ended_at: new Date().toISOString()
+        duration_seconds: elapsed_seconds || 0,
+        tracking_session_id,
+        tab_id: String(tab_id),
+        started_at: new Date().toISOString()
       })
       .select()
       .single()
@@ -79,11 +74,11 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      action: 'inserted',
-      record_id: newEntry.id
+      action: 'created',
+      record_id: newEntry.id,
+      duration_seconds: elapsed_seconds || 0
     })
   } catch (error) {
-    console.error('API error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

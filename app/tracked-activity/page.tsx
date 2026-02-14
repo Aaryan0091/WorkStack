@@ -3,12 +3,12 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { getExtensionId } from '@/lib/extension-detect'
+import { getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Card, CardContent } from '@/components/ui/card'
 import type { TabActivity } from '@/lib/types'
 
-type TimeFilter = 'today' | 'week' | 'month'
+type TimeFilter = 'today' | 'week' | 'month' | 'all'
 
 interface GroupedActivity {
   domain: string
@@ -26,27 +26,69 @@ export default function TrackedActivityPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const [isTracking, setIsTracking] = useState(false)
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('today')
+  const [extensionInstalled, setExtensionInstalled] = useState<boolean | null>(null)
 
-  useEffect(() => {
-    getCurrentUser()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
-    if (userId) {
-      fetchActivities()
-      checkTrackingStatus()
-
-      // Poll for updates every 3 seconds
-      const interval = setInterval(() => {
-        fetchActivities()
-        checkTrackingStatus()
-      }, 3000)
-
-      return () => clearInterval(interval)
+  // Helper to generate better display titles
+  const getDisplayTitle = (url: string, title: string) => {
+    // If title is just domain, try to generate something better
+    const domain = getDomain(url)
+    if (title === domain || title === url) {
+      try {
+        const urlObj = new URL(url)
+        // For YouTube videos, extract video ID and show "YouTube Video"
+        if (urlObj.hostname === 'www.youtube.com' || urlObj.hostname === 'youtube.com') {
+          if (urlObj.pathname === '/watch') {
+            const videoId = urlObj.searchParams.get('v')
+            return videoId ? `YouTube Video (${videoId.slice(0, 8)}...)` : 'YouTube Video'
+          }
+          if (urlObj.pathname.startsWith('/@')) {
+            return `YouTube - ${urlObj.pathname.slice(1)}`
+          }
+          if (urlObj.pathname.startsWith('/c/')) {
+            return `YouTube - ${urlObj.pathname.slice(3)}`
+          }
+        }
+        // For other sites, show a better title
+        return `${urlObj.hostname} - ${urlObj.pathname.slice(1) || 'home'}`
+      } catch {
+        return title || url
+      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId])
+    return title || url
+  }
+
+  const clearHistory = async () => {
+    const confirmed = confirm('Are you sure you want to clear your tracked activity history? This cannot be undone.')
+    if (!confirmed) return
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const response = await fetch('/api/activity/clear-old', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
+        },
+        body: JSON.stringify({
+          user_id: user.id,
+          olderThan: new Date().toISOString()
+        })
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        if (result.success) {
+          // Refresh activities to reflect the clear
+          setActivities([])
+          alert('Activity history cleared successfully!')
+        }
+      }
+    } catch (error) {
+      alert('Failed to clear history. Please try again.')
+    }
+  }
 
   const getCurrentUser = async () => {
     const { data: { user } } = await supabase.auth.getUser()
@@ -57,17 +99,37 @@ export default function TrackedActivityPage() {
     }
   }
 
+  const fetchActivities = async () => {
+    if (!userId) return
+    setLoading(true)
+
+    // Use the list API which returns only the latest entry per tab per session
+    const response = await fetch('/api/activity/list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId })
+    })
+
+    if (response.ok) {
+      const result = await response.json()
+      if (result.success && result.data) {
+        setActivities(result.data)
+      }
+    }
+
+    setLoading(false)
+  }
+
   const checkTrackingStatus = () => {
-    if (typeof window !== 'undefined' && (window as { chrome?: { runtime: { sendMessage: (extensionId: string, message: { action: string }, callback: (response: { isTracking: boolean }) => void) => void; lastError?: unknown } } }).chrome) {
+    if (typeof window !== 'undefined' && (window as any).chrome?.runtime) {
       const extensionId = getExtensionId()
       if (!extensionId) return
 
-      const chromeWindow = window as { chrome?: { runtime: { sendMessage: (extensionId: string, message: { action: string }, callback: (response: { isTracking: boolean }) => void) => void; lastError?: unknown } } }
-      chromeWindow.chrome!.runtime.sendMessage(
+      ;(window as any).chrome.runtime.sendMessage(
         extensionId,
         { action: 'getStatus' },
-        (response: { isTracking: boolean }) => {
-          if (response && !chromeWindow.chrome!.runtime.lastError) {
+        (response: any) => {
+          if (response && !(window as any).chrome.runtime.lastError) {
             setIsTracking(response.isTracking)
           }
         }
@@ -75,22 +137,26 @@ export default function TrackedActivityPage() {
     }
   }
 
-  const fetchActivities = async () => {
-    if (!userId) return
-    setLoading(true)
-
-    const { data, error } = await supabase
-      .from('tab_activity')
-      .select('*')
-      .eq('user_id', userId)
-      .order('started_at', { ascending: false })
-
-    if (!error && data) {
-      setActivities(data)
+  const checkExtensionStatus = () => {
+    if (typeof window !== 'undefined') {
+      const installed = isExtensionInstalledViaContentScript()
+      setExtensionInstalled(installed)
     }
-
-    setLoading(false)
   }
+
+  useEffect(() => {
+    getCurrentUser()
+    checkExtensionStatus()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (userId) {
+      fetchActivities()
+      checkTrackingStatus()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId])
 
   const formatDuration = (seconds: number) => {
     if (seconds < 60) return `${seconds}s`
@@ -111,48 +177,59 @@ export default function TrackedActivityPage() {
     }
   }
 
-  // Filter activities based on time period
+  // Filter activities based on time period (fixed for timezone)
   const filteredActivities = useMemo(() => {
     const now = new Date()
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-
-    // Get start of current week (Sunday)
-    const startOfWeek = new Date(today)
-    const dayOfWeek = startOfWeek.getDay()
-    startOfWeek.setDate(startOfWeek.getDate() - dayOfWeek)
-    startOfWeek.setHours(0, 0, 0, 0)
-
-    // Get start of current month
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-    startOfMonth.setHours(0, 0, 0, 0)
 
     return activities.filter(item => {
       if (!item.started_at) return false
+
+      // Convert UTC timestamp to local date for comparison
       const itemDate = new Date(item.started_at)
+      const itemLocalDate = new Date(itemDate.getFullYear(), itemDate.getMonth(), itemDate.getDate())
+
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+      // Get start of current week (Sunday)
+      const startOfWeek = new Date(today)
+      const dayOfWeek = startOfWeek.getDay()
+      startOfWeek.setDate(startOfWeek.getDate() - dayOfWeek)
+      startOfWeek.setHours(0, 0, 0, 0)
+
+      // Get start of current month
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+      startOfMonth.setHours(0, 0, 0, 0)
 
       switch (timeFilter) {
         case 'today':
-          return itemDate >= today
+          return itemLocalDate.getTime() === today.getTime()
         case 'week':
-          return itemDate >= startOfWeek
+          return itemLocalDate >= startOfWeek
         case 'month':
-          return itemDate >= startOfMonth
+          return itemLocalDate >= startOfMonth
+        case 'all':
+          return true
         default:
           return true
       }
     })
   }, [activities, timeFilter])
 
-  // Group activities by domain
+  const totalSeconds = filteredActivities.reduce((sum, item) => sum + (item.duration_seconds || 0), 0)
+  const totalMinutes = (totalSeconds / 60).toFixed(1)
+  const totalHours = (totalSeconds / 3600).toFixed(1)
+  const uniqueSitesCount = filteredActivities.length
+
+  // Group activities by full URL (each unique URL shows separately)
   const groupedActivities = useMemo(() => {
     const groups = new Map<string, GroupedActivity>()
 
     filteredActivities.forEach(item => {
-      const domain = getDomain(item.url)
+      const urlKey = item.url
 
-      if (!groups.has(domain)) {
-        groups.set(domain, {
-          domain,
+      if (!groups.has(urlKey)) {
+        groups.set(urlKey, {
+          domain: getDomain(item.url),
           url: item.url,
           title: item.title || item.url,
           totalSeconds: item.duration_seconds || 0,
@@ -160,14 +237,12 @@ export default function TrackedActivityPage() {
           lastVisited: item.started_at || ''
         })
       } else {
-        const existing = groups.get(domain)!
+        const existing = groups.get(urlKey)!
         existing.totalSeconds += item.duration_seconds || 0
         existing.visitCount += 1
-        // Keep the most recent last visited date
         if (item.started_at && item.started_at > existing.lastVisited) {
           existing.lastVisited = item.started_at
         }
-        // Keep the most recent title
         if (item.title && item.started_at >= existing.lastVisited) {
           existing.title = item.title
         }
@@ -177,11 +252,6 @@ export default function TrackedActivityPage() {
     // Convert to array and sort by total time spent (descending)
     return Array.from(groups.values()).sort((a, b) => b.totalSeconds - a.totalSeconds)
   }, [filteredActivities])
-
-  const totalSeconds = groupedActivities.reduce((sum, a) => sum + a.totalSeconds, 0)
-  const totalMinutes = (totalSeconds / 60).toFixed(1)
-  const totalHours = (totalSeconds / 3600).toFixed(1)
-  const uniqueSitesCount = groupedActivities.length
 
   return (
     <DashboardLayout>
@@ -195,6 +265,15 @@ export default function TrackedActivityPage() {
               {isTracking ? 'Currently tracking tabs' : 'Last tracked session (tracking stopped)'}
             </p>
           </div>
+          {extensionInstalled === false && (
+            <button
+              onClick={() => router.push('/extension')}
+              className="px-4 py-2.5 rounded-lg font-medium transition-all duration-200 hover:scale-105"
+              style={{ backgroundColor: 'var(--color-primary)', color: 'white', cursor: 'pointer' }}
+            >
+              Download Extension
+            </button>
+          )}
         </div>
 
         {/* Time Filter Buttons */}
@@ -204,11 +283,11 @@ export default function TrackedActivityPage() {
               <button
                 key={filter}
                 onClick={() => setTimeFilter(filter)}
-                className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 cursor-pointer ${
+                className={`px-4 py-2.5 rounded-lg font-medium transition-all duration-200 cursor-pointer ${
                   timeFilter === filter
                     ? 'bg-blue-600 text-white'
                     : 'hover:scale-105'
-                }`}
+                  }`}
                 style={{
                   backgroundColor: timeFilter !== filter ? 'var(--bg-secondary)' : undefined,
                   color: timeFilter !== filter ? 'var(--text-primary)' : undefined
@@ -218,30 +297,6 @@ export default function TrackedActivityPage() {
               </button>
             ))}
           </div>
-
-          {/* Date range display */}
-          <span className="text-sm px-3 py-2 rounded-lg" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>
-            {(() => {
-              const now = new Date()
-              const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-              const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
-
-              if (timeFilter === 'today') {
-                return `Showing: ${today.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`
-              } else if (timeFilter === 'week') {
-                const startOfWeek = new Date(today)
-                const dayOfWeek = startOfWeek.getDay()
-                startOfWeek.setDate(startOfWeek.getDate() - dayOfWeek)
-                const endOfWeek = new Date(startOfWeek)
-                endOfWeek.setDate(endOfWeek.getDate() + 6)
-                return `Showing: ${startOfWeek.toLocaleDateString('en-US', options)} - ${endOfWeek.toLocaleDateString('en-US', options)}`
-              } else {
-                const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-                const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-                return `Showing: ${startOfMonth.toLocaleDateString('en-US', { month: 'long' })} 1 - ${endOfMonth.getDate()}`
-              }
-            })()}
-          </span>
         </div>
 
         <div className="grid grid-cols-3 gap-4">
@@ -285,24 +340,29 @@ export default function TrackedActivityPage() {
               <div className="space-y-2">
                 {groupedActivities.map((item) => (
                   <a
-                    key={item.domain}
+                    key={item.url}
                     href={item.url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="block"
                   >
                     <div
-                      className="p-4 rounded-lg transition-all duration-200 hover:scale-[1.01] hover:shadow-lg"
+                      className="p-4 rounded-lg border transition-all duration-75 hover:scale-[1.02] hover:shadow-lg"
                       style={{
                         backgroundColor: 'var(--bg-secondary)',
+                        borderColor: 'var(--border-color)',
                         cursor: 'pointer'
                       }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(59, 130, 246, 0.1)'}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = 'rgba(59, 130, 246, 0.1)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'
+                      }}
                     >
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-start gap-4">
                         <img
-                          src={`https://www.google.com/s2/favicons?domain=${item.domain}&sz=32`}
+                          src={`https://www.google.com/s2/favicons?domain=${getDomain(item.url)}&sz=32`}
                           className="w-10 h-10 rounded flex-shrink-0"
                           alt=""
                           loading="lazy"
@@ -310,10 +370,10 @@ export default function TrackedActivityPage() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <p className="font-medium truncate hover:text-blue-600 transition-colors" style={{ color: 'var(--text-primary)' }}>
-                              {item.title}
+                              {getDisplayTitle(item.url, item.title)}
                             </p>
                             {item.visitCount > 1 && (
-                              <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6' }}>
+                              <span className="text-xs px-2 py-0.5 rounded-full flex-shrink-0" style={{ backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6' }}>
                                 {item.visitCount} {item.visitCount === 1 ? 'visit' : 'visits'}
                               </span>
                             )}

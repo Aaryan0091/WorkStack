@@ -1,36 +1,97 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# WorkStack - Project Overview
 
-## Getting Started
+WorkStack is a personal bookmark and activity management platform that helps users organize their digital life and track their browsing habits.
 
-First, run the development server:
+## Core Features
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+### 📌 Bookmark Management
+- **Save Bookmarks** - Store any URL with title, description, and notes
+- **Folder Organization** - Group bookmarks into folders for better organization
+- **Collections** - Create collections to group bookmarks across folders
+- **Share Collections** - Generate shareable links for your bookmark collections
+- **Auto-Tagging (AI)** - Automatically assigns relevant tags to new bookmarks
+- **Search** - Full-text search across titles, URLs, descriptions, and tags
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### 🏷️ Tags System
+- **Manual Tagging** - Add custom tags to any bookmark
+- **Tag Suggestions** - AI suggests relevant tags based on bookmark content
+- **Colored Tags** - Each tag has a unique color for visual identification
+- **Tag Management** - Create, edit, and delete tags
+- **Filter by Tags** - Find bookmarks quickly using tag filters
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### 📚 Reading List
+- **Semantic Search (AI)** - Find similar bookmarks using AI-powered semantic understanding
+- **Smart Recommendations** - Get AI-powered bookmark suggestions based on your library
+- **Read/Unread Status** - Track which bookmarks you've read
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 📊 Activity Tracking
+- **Browser Extension** - Chrome/Edge/Brave extension tracks your browsing
+- **Time Tracking** - See how much time you spend on each website
+- **Session History** - View and restore previously tracked tabs
+- **Statistics** - Daily, weekly, and monthly activity summaries
+- **Pause/Resume** - Control when tracking is active
 
-## Learn More
+### 🔍 Smart Search
+- **AI Semantic Search** - Search by meaning, not just keywords (e.g., "car" finds "ferrari")
+- **Multi-Mode Search**
+  - All - Searches everything including AI-expanded terms
+  - Semantic AI - Understands meaning and context
+  - Tags - Search only within tags
+  - Name - Search titles and URLs
+- **Instant Results** - Real-time search with no lag for non-AI modes
 
-To learn more about Next.js, take a look at the following resources:
+### 👤 User Accounts
+- **Guest Mode** - Try the app without signing up (data stored locally)
+- **Full Account** - Sign up/login for cloud sync across devices
+- **Data Sync** - Seamlessly sync guest data when you create an account
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## How It Works
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Saving Bookmarks
+1. Click "Add Bookmark" or use the browser extension
+2. Enter URL (title, description, notes are optional)
+3. Select folder and/or collection
+4. AI automatically tags your bookmark in the background
 
-## Deploy on Vercel
+### Organizing with Collections
+1. Create a collection for any topic (e.g., "Research", "Recipes", "Dev Tools")
+2. Add existing bookmarks to multiple collections
+3. Share collections with others via a unique link
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### Tracking Activity
+1. Install the browser extension (Chrome, Edge, or Brave)
+2. Click "Start Tracking" on the dashboard
+3. Browse normally - extension tracks which tabs you visit
+4. View your activity stats and history on the Tracked Activity page
+5. Restore previous sessions to reopen all tracked tabs
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Finding Content
+- Use **Smart Search** for AI-powered semantic search
+- Filter by **tags** for quick access to categorized bookmarks
+- Browse by **folders** or **collections** for organized viewing
+
+## Platform Features
+
+### Mobile Responsive
+- Hamburger menu navigation
+- Touch-friendly interface
+- Optimized for smaller screens
+
+### Browser Compatibility
+- **Chrome** - Full support including extension
+- **Microsoft Edge** - Full support including extension
+- **Brave** - Full support including extension
+- **Safari** - Web app only (no extension support)
+- **Firefox** - Web app only (no extension support)
+- **Mobile Browsers** - Web app only (no extension support)
+
+### Theme Support
+- Light mode (default)
+- Dark mode
+- System-based theme switching
+
+## Data Privacy
+- All user data stored in personal account
+- Guest data stored locally until account is created
+- Extension can be paused for privacy
+- No third-party tracking

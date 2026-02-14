@@ -57,6 +57,23 @@ export function ReadingListContent() {
   const [selectedBookmark, setSelectedBookmark] = useState<Bookmark | null>(null)
   const [isGuest, setIsGuest] = useState(false)
 
+  // Load saved visibility states from localStorage
+  useEffect(() => {
+    const savedSemantic = localStorage.getItem('workstack_show_semantic')
+    const savedSuggestions = localStorage.getItem('workstack_show_suggestions')
+    if (savedSemantic !== null) setShowSemantic(savedSemantic === 'true')
+    if (savedSuggestions !== null) setShowSuggestions(savedSuggestions === 'true')
+  }, [])
+
+  // Save visibility states to localStorage when they change
+  useEffect(() => {
+    localStorage.setItem('workstack_show_semantic', String(showSemantic))
+  }, [showSemantic])
+
+  useEffect(() => {
+    localStorage.setItem('workstack_show_suggestions', String(showSuggestions))
+  }, [showSuggestions])
+
   useEffect(() => {
     const fetchData = async () => {
       // Check if user is logged in
@@ -84,6 +101,7 @@ export function ReadingListContent() {
       const { data: readingList } = await supabase
         .from('bookmarks')
         .select('*')
+        .eq('user_id', user.id)
         .eq('is_read', false)
         .order('created_at', { ascending: false })
 
@@ -97,6 +115,7 @@ export function ReadingListContent() {
       const { data: readBookmarks } = await supabase
         .from('bookmarks')
         .select('*')
+        .eq('user_id', user.id)
         .eq('is_read', true)
         .order('created_at', { ascending: false })
         .limit(6)
