@@ -43,8 +43,8 @@ export function OpenTabsModal({ isOpen, onClose, onAddBookmarks }: OpenTabsModal
       } else {
         setExtensionAvailable(false)
       }
-    } catch (error) {
-      console.error('Failed to fetch open tabs:', error)
+    } catch {
+      // Extension not available — expected when not installed
       setExtensionAvailable(false)
     } finally {
       setLoading(false)
@@ -165,10 +165,11 @@ export function OpenTabsModal({ isOpen, onClose, onAddBookmarks }: OpenTabsModal
 
                   {/* Favicon */}
                   <div className="w-8 h-8 rounded flex items-center justify-center flex-shrink-0" style={{ backgroundColor: 'var(--bg-primary)' }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={`https://www.google.com/s2/favicons?domain=${getDomain(tab.url)}&sz=32`}
                       className="w-5 h-5"
-                      alt=""
+                      alt="Favicon"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                     />
                   </div>

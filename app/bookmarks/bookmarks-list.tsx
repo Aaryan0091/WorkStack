@@ -51,7 +51,7 @@ const BookmarkCard = memo(({ bookmark, tags, onFavorite, onRead, onEdit, onDelet
             <img
               src={`https://www.google.com/s2/favicons?domain=${getDomain(bookmark.url)}&sz=32`}
               className="w-8 h-8 rounded"
-              alt=""
+              alt="Favicon"
               onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
             />
           </div>
@@ -148,20 +148,24 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   const [modalOpen, setModalOpen] = useState(false)
   const [openTabsModalOpen, setOpenTabsModalOpen] = useState(false)
   const [collectionModalOpen, setCollectionModalOpen] = useState(false)
-  const [collections, setCollections] = useState<Array<{ id: string; name: string; description?: string | null; is_public: boolean }>>([])
-  const [collectionsLoading, setCollectionsLoading] = useState(false)
-  const [bookmarkForCollection, setBookmarkForCollection] = useState<Bookmark | null>(null)
-  const [selectedCollectionIds, setSelectedCollectionIds] = useState<Set<string>>(new Set())
-  const [bookmarkCollectionMap, setBookmarkCollectionMap] = useState<Record<string, Set<string>>>({})
 
   // Update bookmarks when initialBookmarks prop changes (e.g., after import)
   useEffect(() => {
     setBookmarks(initialBookmarks)
   }, [initialBookmarks])
+
+  // Form state
   const [editingBookmark, setEditingBookmark] = useState<Bookmark | null>(null)
   const [formData, setFormData] = useState({ url: '', title: '', description: '', notes: '' })
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([])
   const [newTagName, setNewTagName] = useState('')
+
+  // Collections state
+  const [bookmarkForCollection, setBookmarkForCollection] = useState<Bookmark | null>(null)
+  const [selectedCollectionIds, setSelectedCollectionIds] = useState<Set<string>>(new Set())
+  const [bookmarkCollectionMap, setBookmarkCollectionMap] = useState<Record<string, Set<string>>>({})
+  const [collections, setCollections] = useState<Array<{ id: string; name: string; description?: string | null; is_public: boolean }>>([])
+  const [collectionsLoading, setCollectionsLoading] = useState(false)
 
   // Toast and confirm dialog state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null)
@@ -415,8 +419,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
     }
 
     cleanupUnusedTags()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isGuest])
+  }, [isGuest, tags])
 
   // Save to localStorage for guest mode
   const saveGuestBookmarks = (updatedBookmarks: Bookmark[]) => {
@@ -760,9 +763,8 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
         setAiSuggestions(data.suggested)
         setAiSuggestedTagIds(new Set(data.suggested.map((t: { id: string }) => t.id)))
 
-        const summary = data.summary
         setToast({
-          message: `AI suggested ${summary.total} tag(s): ${summary.matched} existing, ${summary.created} new`,
+          message: `AI suggested ${data.summary.total} tag(s): ${data.summary.matched} existing, ${data.summary.created} new`,
           type: 'success'
         })
       } else {
@@ -1054,7 +1056,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
         <form onSubmit={handleSubmit} className="space-y-4">
           {isGuest && (
             <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(251, 146, 60, 0.1)', border: '1px solid rgba(251, 146, 60, 0.3)' }}>
-              <span style={{ color: '#ea580c' }}>⚠️ Guest mode: This bookmark will be lost when you close the browser. <a href="/login" style={{ color: '#3b82f6', textDecoration: 'underline' }}>Sign in</a> to save permanently.</span>
+              <span style={{ color: '#ea580c' }}>⚠️ Guest mode: This bookmark will be lost when you close the tab. <a href="/login" style={{ color: '#3b82f6', textDecoration: 'underline' }}>Sign in</a> to save permanently.</span>
             </div>
           )}
           <Input label="URL" placeholder="https://example.com" value={formData.url} onChange={(e) => setFormData({ ...formData, url: e.target.value })} required />

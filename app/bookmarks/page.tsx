@@ -166,6 +166,15 @@ export default function BookmarksPage() {
           importing={importing}
           onError={(message) => setToast({ message, type: 'error' })}
         />
+
+        {/* Guest Mode Warning */}
+        {isGuest && (
+          <div className="p-3 rounded-lg text-sm flex items-center justify-between" style={{ backgroundColor: 'rgba(251, 146, 60, 0.1)', border: '1px solid rgba(251, 146, 60, 0.3)' }}>
+            <span style={{ color: '#ea580c' }}>⚠️ Guest mode: Your bookmarks will be lost when you close the tab.</span>
+            <a href="/login" className="px-3 py-1 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 transition-colors">Sign in to save</a>
+          </div>
+        )}
+
         <BookmarksList
           initialBookmarks={bookmarks}
           initialTags={tags}

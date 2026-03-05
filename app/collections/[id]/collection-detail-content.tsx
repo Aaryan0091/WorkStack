@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Card, CardContent } from '@/components/ui/card'
@@ -11,7 +12,6 @@ import { Textarea } from '@/components/ui/input'
 import type { Bookmark, Collection } from '@/lib/types'
 import {
   guestStoreGet,
-  guestStoreSet,
   GUEST_KEYS,
   markGuestMode
 } from '@/lib/guest-storage'
@@ -30,7 +30,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const [bookmarks, setBookmarks] = useState<CollectionBookmark[]>([])
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [userNames, setUserNames] = useState<Record<string, string>>({})
-  const [loading, setLoading] = useState(false) // Start with loading=false for instant render
+  const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
@@ -39,7 +39,6 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const [formData, setFormData] = useState({ url: '', title: '' })
   const [formError, setFormError] = useState('')
   const [availableBookmarks, setAvailableBookmarks] = useState<Bookmark[]>([])
-  const [availableBookmarksLoading, setAvailableBookmarksLoading] = useState(false)
   const [bookmarkSearchQuery, setBookmarkSearchQuery] = useState('')
   const [collectionSearchQuery, setCollectionSearchQuery] = useState('')
   const [selectedBookmarkIds, setSelectedBookmarkIds] = useState<Set<string>>(new Set())
@@ -51,34 +50,32 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const [newBookmarkTitle, setNewBookmarkTitle] = useState('')
   const [bookmarkFilterType, setBookmarkFilterType] = useState<'all' | 'favorites' | 'reading-list'>('all')
 
+  // Store the channel ref so we can clean it up
+  const channelRef = useRef<RealtimeChannel | null>(null)
+  // Track if we've set up the subscription yet
+  const subscriptionReady = useRef(false)
+  // Track if we've seen the first subscription callback (which fires on subscribe)
+  const firstCallbackSeen = useRef(false)
+  // Track initial data fetch completion
+  const initialFetchComplete = useRef(false)
+  // Track current bookmark count via ref to avoid stale closure in safeguard
+  const bookmarksCountRef = useRef(0)
+
   useEffect(() => {
+    // Initial data fetch
     fetchData()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collectionId])
 
-  // Real-time subscription for collection_bookmarks changes
-  useEffect(() => {
-    const channel = supabase
-      .channel('collection_bookmarks_changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*', // Listen to INSERT, UPDATE, DELETE
-          schema: 'public',
-          table: 'collection_bookmarks',
-          filter: `collection_id=eq.${collectionId}`
-        },
-        () => {
-          // Refresh data when any change happens to this collection's bookmarks
-          fetchData()
-        }
-      )
-      .subscribe()
-
+    // Cleanup: remove channel when component unmounts or collectionId changes
     return () => {
-      supabase.removeChannel(channel)
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current)
+        channelRef.current = null
+      }
+      subscriptionReady.current = false
+      firstCallbackSeen.current = false
+      initialFetchComplete.current = false
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collectionId])
 
   // Fetch available bookmarks when modal opens
@@ -97,10 +94,8 @@ export function CollectionDetailContent({ collectionId }: Props) {
   }, [addModalOpen])
 
   const fetchAvailableBookmarks = async () => {
-    setAvailableBookmarksLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) {
-      setAvailableBookmarksLoading(false)
       return
     }
 
@@ -112,6 +107,14 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
     const existingIds = new Set(existingInCollection?.map((c: { bookmark_id: string }) => c.bookmark_id) || [])
 
+    // Also include bookmarks with direct collection_id (backwards compat)
+    const { data: directInCollection } = await supabase
+      .from('bookmarks')
+      .select('id')
+      .eq('collection_id', collectionId)
+
+    directInCollection?.forEach((b: { id: string }) => existingIds.add(b.id))
+
     // Fetch all user's bookmarks, then filter out the ones already in this collection
     const { data } = await supabase
       .from('bookmarks')
@@ -122,39 +125,6 @@ export function CollectionDetailContent({ collectionId }: Props) {
     // Filter out bookmarks already in this collection
     const available = (data || []).filter((b: Bookmark) => !existingIds.has(b.id))
     setAvailableBookmarks(available)
-    setAvailableBookmarksLoading(false)
-  }
-
-  const addExistingToCollection = async (bookmark: Bookmark) => {
-    setActionLoading(true)
-
-    // Get current user for added_by field
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      setActionLoading(false)
-      return
-    }
-
-    // Add to collection via junction table
-    const { error } = await supabase
-      .from('collection_bookmarks')
-      .insert({
-        collection_id: collectionId,
-        bookmark_id: bookmark.id,
-        added_by: user.id
-      })
-
-    if (error) {
-      console.error('Failed to add bookmark to collection:', error)
-      setActionLoading(false)
-      return
-    }
-
-    // Refresh data to ensure consistency
-    await fetchData()
-
-    setAddModalOpen(false)
-    setActionLoading(false)
   }
 
   const addToCollection = async (bookmarkIds: Set<string>, collectionIdToAdd: string) => {
@@ -294,6 +264,8 @@ export function CollectionDetailContent({ collectionId }: Props) {
   }
 
   const fetchData = async () => {
+    if (process.env.NODE_ENV === 'development') console.log('[fetchData] Starting fetch...')
+    try {
     // Get current user first to check auth
     const { data: { user } } = await supabase.auth.getUser()
 
@@ -310,7 +282,9 @@ export function CollectionDetailContent({ collectionId }: Props) {
             setCollection(collection)
             // Get bookmarks for this collection from guest storage
             const collectionBookmarks = storedBookmarks?.filter((b: Bookmark) => b.collection_id === collectionId) || []
+            if (process.env.NODE_ENV === 'development') console.log('[fetchData] Guest mode - setting bookmarks:', collectionBookmarks.length)
             setBookmarks(collectionBookmarks)
+            if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] Guest mode - bookmarks:', collectionBookmarks.length)
             setLoading(false)
             return
           }
@@ -325,34 +299,53 @@ export function CollectionDetailContent({ collectionId }: Props) {
     }
 
     // Logged in user - fetch from Supabase
+    if (process.env.NODE_ENV === 'development') console.log('[fetchData] Logged in user:', user.id)
     setCurrentUserId(user.id)
 
-    // Fetch collection and bookmarks in parallel
-    const [collectionRes, junctionRes] = await Promise.all([
+    // Fetch collection and bookmarks in parallel (junction table + direct collection_id for backwards compatibility)
+    const [collectionRes, junctionRes, directRes] = await Promise.all([
       supabase.from('collections').select('*').eq('id', collectionId).single(),
       supabase
         .from('collection_bookmarks')
         .select('bookmark_id, bookmarks(*), added_by')
         .eq('collection_id', collectionId),
+      // Also fetch bookmarks with direct collection_id for backwards compatibility
+      supabase
+        .from('bookmarks')
+        .select('*')
+        .eq('collection_id', collectionId)
     ])
 
     const newCollection = collectionRes.data
 
     // Extract bookmarks from junction table result with added_by info
     let newBookmarks: CollectionBookmark[] = []
+    const seenIds = new Set<string>() // Track seen IDs to avoid duplicates
     const orphanedIds: string[] = []
 
-    ;(junctionRes.data || []).forEach((jb: { bookmarks: CollectionBookmark[] | null; added_by: string; bookmark_id: string }) => {
-      if (jb.bookmarks && jb.bookmarks.length > 0) {
+    ;(junctionRes.data || []).forEach((jb: { bookmarks: CollectionBookmark | CollectionBookmark[] | null; added_by: string; bookmark_id: string }) => {
+      const bookmark = Array.isArray(jb.bookmarks) ? jb.bookmarks[0] : jb.bookmarks
+      if (bookmark) {
         newBookmarks.push({
-          ...jb.bookmarks[0],
+          ...bookmark,
           added_by: jb.added_by
         })
+        seenIds.add(bookmark.id)
       } else {
         // Bookmark was deleted but junction entry still exists - track orphaned
         orphanedIds.push(jb.bookmark_id)
       }
     })
+
+    // Add bookmarks with direct collection_id (for backwards compatibility)
+    ;(directRes.data || []).forEach((bookmark: CollectionBookmark) => {
+      if (!seenIds.has(bookmark.id)) {
+        newBookmarks.push(bookmark)
+        seenIds.add(bookmark.id)
+      }
+    })
+
+    if (process.env.NODE_ENV === 'development') console.log('[fetchData] Total bookmarks found:', newBookmarks.length)
 
     // Clean up orphaned entries if user is the owner
     if (newCollection && user?.id === newCollection.user_id && orphanedIds.length > 0) {
@@ -400,10 +393,76 @@ export function CollectionDetailContent({ collectionId }: Props) {
     if (newCollection) {
       setCollection(newCollection)
     }
+
+    if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] About to set bookmarks:', newBookmarks.length)
+    if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] Current bookmarks in state:', bookmarks.length)
+    if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] initialFetchComplete:', initialFetchComplete.current)
+    console.trace('[setBookmarks] Stack trace:')
+
+    // Mark that a fetch has completed (before the safeguard check)
+    const isFirstFetch = !initialFetchComplete.current
+    initialFetchComplete.current = true
+
+    // SAFEGUARD: Don't overwrite existing bookmarks with empty data after initial fetch
+    // This prevents the subscription callback from clearing data on initial subscribe
+    if (!isFirstFetch && newBookmarks.length === 0 && bookmarksCountRef.current > 0) {
+      console.warn('[setBookmarks] BLOCKED - Would overwrite', bookmarksCountRef.current, 'bookmarks with 0')
+      setLoading(false)
+      return
+    }
+
+    bookmarksCountRef.current = newBookmarks.length
     setBookmarks(newBookmarks)
     setLoading(false)
+
+    if (process.env.NODE_ENV === 'development') console.log('[fetchData] Fetch complete, bookmarks:', newBookmarks.length, 'isFirstFetch:', isFirstFetch)
+
+    // Set up real-time subscription AFTER initial data is loaded (only once)
+    // This prevents race condition where subscription callback fires before initial data loads
+    if (!subscriptionReady.current && user) {
+      subscriptionReady.current = true
+      if (process.env.NODE_ENV === 'development') console.log('[fetchData] Setting up subscription...')
+
+      // Small delay to ensure initial render completes before subscription starts
+      setTimeout(() => {
+        const channel = supabase
+          .channel('collection_bookmarks_changes_' + collectionId)
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'collection_bookmarks',
+              filter: `collection_id=eq.${collectionId}`
+            },
+            () => {
+              if (process.env.NODE_ENV === 'development') console.log('[subscription] Callback fired, firstCallbackSeen:', firstCallbackSeen.current)
+              // Ignore the first callback that fires when subscribing
+              if (!firstCallbackSeen.current) {
+                firstCallbackSeen.current = true
+                if (process.env.NODE_ENV === 'development') console.log('[subscription] Ignoring first callback')
+                return
+              }
+              if (process.env.NODE_ENV === 'development') console.log('[subscription] Processing real change, fetching data...')
+              fetchData()
+            }
+          )
+          .subscribe()
+
+        channelRef.current = channel
+        if (process.env.NODE_ENV === 'development') console.log('[fetchData] Subscription created')
+      }, 100)
+    }
+    } catch (err) {
+      // Handle transient network errors during fetch/refresh
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[fetchData] Error:', err)
+      }
+      setLoading(false)
+    }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const addBookmark = async (e: React.FormEvent) => {
     e.preventDefault()
     setFormError('')
@@ -535,14 +594,23 @@ export function CollectionDetailContent({ collectionId }: Props) {
     const isOwner = collection?.user_id === userId
 
     if (isOwner) {
-      // Owner: actually delete from collection_bookmarks (removes for everyone)
+      // Owner: delete from collection_bookmarks junction table
       await supabase
         .from('collection_bookmarks')
         .delete()
         .eq('collection_id', collectionId)
         .eq('bookmark_id', bookmarkId)
 
-      // Refresh data
+      // Also clear direct collection_id for backwards compatibility
+      await supabase
+        .from('bookmarks')
+        .update({ collection_id: null })
+        .eq('id', bookmarkId)
+        .eq('collection_id', collectionId)
+
+      // Optimistically update UI, then refresh
+      bookmarksCountRef.current = Math.max(0, bookmarksCountRef.current - 1)
+      setBookmarks(prev => prev.filter(b => b.id !== bookmarkId))
       await fetchData()
     } else {
       // Non-owner: add to removed_collection_bookmarks (only hides from their view)
@@ -701,6 +769,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
     setSelectedBookmarkIds(newSelection)
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const toggleSelectAll = () => {
     if (selectedBookmarkIds.size === bookmarks.length) {
       // Deselect all
@@ -780,14 +849,24 @@ export function CollectionDetailContent({ collectionId }: Props) {
     const isOwner = collection?.user_id === currentUserId
 
     if (isOwner) {
-      // Owner: actually delete from collection_bookmarks (removes for everyone)
+      // Owner: delete from collection_bookmarks junction table and clear direct collection_id
       for (const bookmarkId of selectedBookmarkIds) {
         await supabase
           .from('collection_bookmarks')
           .delete()
           .eq('collection_id', collectionId)
           .eq('bookmark_id', bookmarkId)
+
+        // Also clear direct collection_id for backwards compatibility
+        await supabase
+          .from('bookmarks')
+          .update({ collection_id: null })
+          .eq('id', bookmarkId)
+          .eq('collection_id', collectionId)
       }
+
+      // Update ref before fetchData to prevent safeguard blocking
+      bookmarksCountRef.current = Math.max(0, bookmarksCountRef.current - selectedBookmarkIds.size)
 
       // Refresh data
       await fetchData()
@@ -803,6 +882,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
           })
       )
 
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const results = await Promise.all(inserts)
 
       // Optimistically update UI
@@ -815,6 +895,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
     setActionLoading(false)
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const bulkMarkAsRead = async () => {
     if (selectedBookmarkIds.size === 0) return
 
@@ -832,6 +913,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
     ))
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const bulkMarkAsUnread = async () => {
     if (selectedBookmarkIds.size === 0) return
 
@@ -1029,7 +1111,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
                   selectionMode && isSelected ? 'ring-2 ring-blue-500' : ''
                 }`}
                 style={{ backgroundColor: 'var(--bg-secondary)' }}
-                onClick={(e) => {
+                onClick={() => {
                   // Only toggle selection if in selection mode and clicking outside buttons
                   if (selectionMode) {
                     toggleBookmarkSelection(bookmark.id)
@@ -1055,7 +1137,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
                       <img
                         src={`https://www.google.com/s2/favicons?domain=${getDomain(bookmark.url)}&sz=32`}
                         className="w-10 h-10 rounded flex-shrink-0"
-                        alt=""
+                        alt="Favicon"
                         loading="lazy"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
@@ -1317,7 +1399,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
                       <img
                         src={`https://www.google.com/s2/favicons?domain=${getDomain(bookmark.url)}&sz=32`}
                         className="w-8 h-8"
-                        alt=""
+                        alt="Favicon"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
                     </div>

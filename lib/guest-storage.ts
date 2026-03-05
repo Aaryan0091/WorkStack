@@ -37,12 +37,12 @@ function sanitizeValue(value: unknown): StoredValue {
   return null
 }
 
-// Simple helpers for localStorage (persists on refresh, cleared on browser close)
-// We use localStorage for data persistence and clear it on beforeunload
+// Simple helpers for sessionStorage (persists on refresh, cleared on tab close)
+// We use sessionStorage for guest data - automatically cleared when tab closes
 export function guestStoreGet<T = StoredValue>(key: string): T | null {
   if (typeof window === 'undefined') return null
   try {
-    const item = localStorage.getItem(key)
+    const item = sessionStorage.getItem(key)
     if (!item) return null
     return JSON.parse(item) as T
   } catch {
@@ -54,16 +54,16 @@ export function guestStoreSet(key: string, value: StoredValue): void {
   if (typeof window === 'undefined') return
   try {
     const sanitized = sanitizeValue(value)
-    localStorage.setItem(key, JSON.stringify(sanitized))
+    sessionStorage.setItem(key, JSON.stringify(sanitized))
   } catch {
-    // Silently fail if localStorage is full or unavailable
+    // Silently fail if sessionStorage is full or unavailable
   }
 }
 
 export function guestStoreRemove(key: string): void {
   if (typeof window === 'undefined') return
   try {
-    localStorage.removeItem(key)
+    sessionStorage.removeItem(key)
   } catch {
     // Silently fail
   }
@@ -136,9 +136,10 @@ export function isGuestMode(): boolean {
 export function clearGuestData(): void {
   if (typeof window === 'undefined') return
   try {
-    Object.values(GUEST_KEYS).forEach(key => {
-      localStorage.removeItem(key)
-    })
+    // Clear from sessionStorage (guest data)
+    sessionStorage.removeItem(GUEST_KEYS.BOOKMARKS)
+    sessionStorage.removeItem(GUEST_KEYS.COLLECTIONS)
+    sessionStorage.removeItem(GUEST_KEYS.TAGS)
   } catch {
     // Silently fail
   }
@@ -164,7 +165,7 @@ let cleanupFn: (() => void) | null = null
 
 /**
  * Setup cleanup listener for guest mode
- * Clears data when browser is closed (beforeunload) if user hasn't signed in
+ * SessionStorage automatically clears when tab closes, but we also clear guest mode flag
  * Only sets up the listener once
  */
 export function setupGuestCleanup(): () => void {
@@ -174,13 +175,17 @@ export function setupGuestCleanup(): () => void {
   if (cleanupFn) return cleanupFn
 
   const handleBeforeUnload = () => {
-    // Only clear if user is still in guest mode (never signed in)
-    if (!hasUserSignedIn() && isGuestMode()) {
-      clearGuestData()
+    // Clear guest mode flag when tab closes (data is auto-cleared by sessionStorage)
+    if (!hasUserSignedIn()) {
+      try {
+        localStorage.removeItem(GUEST_MODE_KEY)
+      } catch {
+        // Silently fail
+      }
     }
   }
 
-  // Listen for page unload (browser close)
+  // Listen for page unload (tab close)
   window.addEventListener('beforeunload', handleBeforeUnload)
 
   // Create cleanup function
@@ -208,10 +213,10 @@ export function teardownGuestCleanup(): void {
 export function hasGuestData(): boolean {
   if (typeof window === 'undefined') return false
   try {
-    return Object.values(GUEST_KEYS).some(key => {
-      if (key === SIGNED_IN_KEY || key === GUEST_MODE_KEY) return false
-      return localStorage.getItem(key) !== null
-    })
+    // Check sessionStorage for guest data
+    return sessionStorage.getItem(GUEST_KEYS.BOOKMARKS) !== null ||
+      sessionStorage.getItem(GUEST_KEYS.COLLECTIONS) !== null ||
+      sessionStorage.getItem(GUEST_KEYS.TAGS) !== null
   } catch {
     return false
   }

@@ -35,7 +35,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       chrome.runtime.sendMessage({ action: 'getStatus' }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
     ])
-  } catch (err) {
+  } catch {
     // Failed to get status, will use storage fallback
     // Try to load from storage as fallback
     chrome.storage.local.get(['isTracking', 'isPaused'], (result) => {
@@ -232,7 +232,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           })
         })
 
-      } catch (error) {
+      } catch {
         collectionList.innerHTML = '<div class="collection-item-empty">Failed to load collections.<br>Try refreshing the page.</div>'
       }
     })
@@ -260,7 +260,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           try {
             const urlObj = new URL(tabUrl)
             title = urlObj.hostname
-          } catch (e) {
+          } catch {
             title = tabUrl
           }
         }
@@ -292,7 +292,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           showNotification(`Error: ${data.error || 'Failed'}`, 'error')
           closeModal()
         }
-      } catch (error) {
+      } catch {
         showNotification('Failed to connect. Is app running?', 'error')
         closeModal()
       }
@@ -354,7 +354,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
               const urlObj = new URL(tabUrl)
               title = urlObj.hostname
-            } catch (e) {
+            } catch {
               title = tabUrl
             }
           }
@@ -388,7 +388,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else {
           showNotification(`Error: ${data.error || 'Failed'}`, 'error')
         }
-      } catch (error) {
+      } catch {
         showNotification('Failed to connect. Is app running?', 'error')
       } finally {
         addBookmarkBtn.innerHTML = originalText

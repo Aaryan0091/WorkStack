@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { oldUrl, newUrl, newTitle, additionalDuration, tabId } = await request.json()
+    const { newUrl, newTitle, additionalDuration } = await request.json()
 
     if (!newUrl) {
       return NextResponse.json({ error: 'Missing newUrl parameter' }, { status: 400 })
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
 
     // STEP 1: Look for an existing entry with this URL (from any previous session)
     // We want to ACCUMULATE time, not create duplicate entries
-    const { data: existingEntry, error: fetchError } = await supabase
+    const { data: existingEntry } = await supabase
       .from('tab_activity')
       .select('*')
       .eq('user_id', user.id) // Use authenticated user's ID
@@ -62,12 +62,6 @@ export async function POST(request: NextRequest) {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle()
-
-    if (fetchError && fetchError.code !== 'PGRST116') {
-      if (process.env.NODE_ENV === 'development') {
-        console.error('[Update-URL API] Fetch error:', fetchError)
-      }
-    }
 
     if (existingEntry) {
       // Entry exists - UPDATE it (add time, update title)

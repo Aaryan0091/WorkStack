@@ -16,9 +16,6 @@ export async function updateSession(request: NextRequest) {
     request,
   })
 
-  // Public routes - always accessible
-  const isPublicRoute = pathname.startsWith('/login') || pathname.startsWith('/share') || pathname.startsWith('/api')
-
   // If on login page and already has auth cookie, redirect to home
   if (hasAuthCookie && pathname.startsWith('/login')) {
     const url = request.nextUrl.clone()
@@ -37,11 +34,11 @@ export async function updateSession(request: NextRequest) {
           get(name: string) {
             return request.cookies.get(name)?.value
           },
-          set(name: string, value: string, options: Record<string, unknown>) {
+          set(name: string, value: string) {
             request.cookies.set(name, value)
-            supabaseResponse.cookies.set(name, value, options)
+            supabaseResponse.cookies.set(name, value)
           },
-          remove(name: string, options: Record<string, unknown>) {
+          remove(name: string) {
             request.cookies.delete(name)
             supabaseResponse.cookies.delete(name)
           },

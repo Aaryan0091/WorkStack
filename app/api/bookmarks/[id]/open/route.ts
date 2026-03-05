@@ -1,26 +1,18 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
+import { ENV, corsHeaders, handleOptionsRequest } from '@/lib/api-response'
+
+const supabaseUrl = ENV.SUPABASE_URL
+const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
+const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
 
 interface SupabaseError {
   code?: string
   message?: string
 }
-
-// Helper to add CORS headers
-function corsHeaders(response: NextResponse) {
-  response.headers.set('Access-Control-Allow-Origin', '*')
-  response.headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  return response
-}
-
-// Handle OPTIONS preflight request
-export async function OPTIONS() {
-  return corsHeaders(new NextResponse(null, { status: 200 }))
+export async function OPTIONS(request: NextRequest) {
+  return handleOptionsRequest(request)
 }
 
 // Verify auth token and get user
@@ -52,14 +44,14 @@ export async function POST(
 
     if (!user) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const { id } = await params
 
     if (!id) {
       const response = NextResponse.json({ error: 'Bookmark ID is required' }, { status: 400 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
@@ -74,7 +66,7 @@ export async function POST(
 
     if (!bookmark) {
       const response = NextResponse.json({ error: 'Bookmark not found' }, { status: 404 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // Update last_opened_at timestamp (but DON'T mark as read - user must manually mark as read)
@@ -104,15 +96,15 @@ export async function POST(
         // Column doesn't exist, but that's okay - the bookmark was still "opened"
       } else {
         const response = NextResponse.json({ error: errorMessage }, { status: 500 })
-        return corsHeaders(response)
+        return corsHeaders(response, request)
       }
     }
 
     const response = NextResponse.json({ success: true })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   } catch (error) {
     console.error('API error:', error)
     const response = NextResponse.json({ error: 'Internal server error' }, { status: 500 })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   }
 }

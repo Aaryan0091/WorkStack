@@ -87,13 +87,6 @@ export default function ExtensionPage() {
     }
   }
 
-  const getExtensionUrl = () => {
-    if (browser.includes('Chrome')) return 'chrome://extensions/'
-    if (browser.includes('Edge')) return 'edge://extensions/'
-    if (browser.includes('Brave')) return 'brave://extensions/'
-    return 'chrome://extensions/'
-  }
-
   const copyToClipboard = (url: string) => {
     navigator.clipboard.writeText(url)
     setCopiedUrl(url)

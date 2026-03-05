@@ -716,7 +716,7 @@ export default function TagsPage() {
         {/* Create New Tag Button */}
         <button
           onClick={openCreateModal}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border cursor-pointer bg-[var(--bg-secondary)] text-[var(--text-primary)] border-[var(--border-color)]"
+          className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border cursor-pointer bg-(--bg-secondary) text-(--text-primary) border-(--border-color)"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -733,7 +733,7 @@ export default function TagsPage() {
               setSelectedTagIds(new Set())
             }
           }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border cursor-pointer ${selectMode ? 'ring-2 bg-blue-600 text-white border-blue-600' : 'bg-[var(--bg-secondary)] text-[var(--text-primary)] border-[var(--border-color)]'}`}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all border cursor-pointer ${selectMode ? 'ring-2 bg-blue-600 text-white border-blue-600' : 'bg-(--bg-secondary) text-(--text-primary) border-(--border-color)'}`}
           aria-label={selectMode ? 'Exit select mode' : 'Enter select mode'}
           aria-pressed={selectMode}
         >

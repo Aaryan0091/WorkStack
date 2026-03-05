@@ -22,12 +22,6 @@ export function Toast({ message, type = 'info', duration = 3000, onClose }: Toas
     return () => clearTimeout(timer)
   }, [duration, onClose])
 
-  const bgColor = {
-    success: 'bg-green-600',
-    error: 'bg-red-600',
-    info: 'bg-gray-800'
-  }[type]
-
   return (
     <div
       className={`fixed bottom-4 left-1/2 -translate-x-1/2 px-6 py-3 rounded-lg shadow-lg text-white text-sm font-medium z-50 transition-all duration-300 ${

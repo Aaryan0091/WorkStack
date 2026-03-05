@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { url, title, domain, tracking_session_id, tab_id, is_new_entry, elapsed_seconds } = await request.json()
+    const { url, title, domain, tracking_session_id, tab_id, elapsed_seconds } = await request.json()
 
     if (!url) {
       return NextResponse.json({ error: 'Missing url' }, { status: 400 })
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
     // Look for existing entry with same session_id + tab_id for authenticated user
-    const { data: existingEntry, error: fetchError } = await supabase
+    const { data: existingEntry } = await supabase
       .from('tab_activity')
       .select('*')
       .eq('user_id', user.id) // Use authenticated user's ID
@@ -115,7 +115,7 @@ export async function POST(request: NextRequest) {
       record_id: newEntry.id,
       duration_seconds: elapsed_seconds || 0
     })
-  } catch (error) {
+  } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

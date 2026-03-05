@@ -9,7 +9,7 @@ import { Modal } from '@/components/ui/modal'
 import { Button } from '@/components/ui/button'
 import type { Bookmark, Collection } from '@/lib/types'
 import { guestStoreSet, guestStoreGet, GUEST_KEYS, markGuestMode } from '@/lib/guest-storage'
-import { generateUUID, generateShortId } from '@/lib/utils'
+import { generateUUID } from '@/lib/utils'
 
 interface SharedCollectionClientProps {
   collection: Collection
@@ -220,10 +220,11 @@ export function SharedCollectionClient({ collection, bookmarks: initialBookmarks
                   <div className="flex items-start gap-3">
                     {/* Favicon */}
                     <div className="w-10 h-10 rounded flex items-center justify-center flex-shrink-0 overflow-hidden" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={`https://www.google.com/s2/favicons?domain=${new URL(bookmark.url).hostname}&sz=32`}
                         className="w-10 h-10"
-                        alt=""
+                        alt="Favicon"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
                     </div>

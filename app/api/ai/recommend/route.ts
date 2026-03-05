@@ -2,10 +2,12 @@ import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 import Groq from 'groq-sdk'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
-const GROQ_API_KEY = process.env.GROQ_API_KEY!
+import { ENV, corsHeaders, handleOptionsRequest } from '@/lib/api-response'
+
+const supabaseUrl = ENV.SUPABASE_URL
+const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
+const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
+const GROQ_API_KEY = ENV.GROQ_API_KEY
 
 interface Bookmark {
   id: string
@@ -21,18 +23,8 @@ interface Bookmark {
 interface ScoredBookmark extends Bookmark {
   _score: number
 }
-
-// Add CORS headers
-function corsHeaders(response: NextResponse) {
-  response.headers.set('Access-Control-Allow-Origin', '*')
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  return response
-}
-
-// Handle OPTIONS preflight request
-export async function OPTIONS() {
-  return corsHeaders(new NextResponse(null, { status: 200 }))
+export async function OPTIONS(request: NextRequest) {
+  return handleOptionsRequest(request)
 }
 
 // Verify auth token and get user
@@ -63,7 +55,7 @@ export async function POST(request: NextRequest) {
         { recommendations: [] },
         { status: 200 }
       )
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // Authenticate user
@@ -71,7 +63,7 @@ export async function POST(request: NextRequest) {
     const user = await getUserFromToken(authHeader)
     if (!user) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
@@ -88,12 +80,12 @@ export async function POST(request: NextRequest) {
     if (readingListError) {
       console.error('Reading list fetch error:', readingListError)
       const response = NextResponse.json({ recommendations: [] })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     if (!readingList || readingList.length === 0) {
       const response = NextResponse.json({ recommendations: [] })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // 2. Build context from reading list
@@ -152,7 +144,7 @@ Now extract semantic queries from this reading list:`
       const content = aiResponse.choices[0]?.message?.content
       if (!content) {
         const response = NextResponse.json({ recommendations: [] })
-        return corsHeaders(response)
+        return corsHeaders(response, request)
       }
 
       const parsed = JSON.parse(content)
@@ -160,7 +152,7 @@ Now extract semantic queries from this reading list:`
 
       if (queries.length === 0) {
         const response = NextResponse.json({ recommendations: [] })
-        return corsHeaders(response)
+        return corsHeaders(response, request)
       }
 
       // 4. Search for bookmarks matching these queries (excluding current reading list)
@@ -220,12 +212,12 @@ Now extract semantic queries from this reading list:`
         queries,
         count: recommendations.length,
       })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     } catch (aiError) {
       console.error('AI recommendation error:', aiError)
       // Return empty recommendations on AI error instead of failing
       const response = NextResponse.json({ recommendations: [] })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
   } catch (error) {
     console.error('Recommendation API error:', error)
@@ -233,6 +225,6 @@ Now extract semantic queries from this reading list:`
       { recommendations: [] },
       { status: 200 }
     )
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   }
 }

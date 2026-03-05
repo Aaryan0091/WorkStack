@@ -1,21 +1,13 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
+import { ENV, corsHeaders, handleOptionsRequest } from '@/lib/api-response'
 
-// Helper to add CORS headers
-function corsHeaders(response: NextResponse) {
-  response.headers.set('Access-Control-Allow-Origin', '*')
-  response.headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  return response
-}
-
-// Handle OPTIONS preflight request
-export async function OPTIONS() {
-  return corsHeaders(new NextResponse(null, { status: 200 }))
+const supabaseUrl = ENV.SUPABASE_URL
+const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
+const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
+export async function OPTIONS(request: NextRequest) {
+  return handleOptionsRequest(request)
 }
 
 // Verify auth token and get user
@@ -44,7 +36,7 @@ export async function POST(request: NextRequest) {
 
     if (!user) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const body = await request.json()
@@ -52,7 +44,7 @@ export async function POST(request: NextRequest) {
 
     if (!code) {
       const response = NextResponse.json({ error: 'Collection code is required' }, { status: 400 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
@@ -95,7 +87,7 @@ export async function POST(request: NextRequest) {
 
     if (!collection) {
       const response = NextResponse.json({ error: 'Collection not found' }, { status: 404 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // Check if user already has access to this collection
@@ -112,7 +104,7 @@ export async function POST(request: NextRequest) {
         collection,
         role: existingAccess.role
       })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // Determine role based on collection's is_public setting
@@ -134,7 +126,7 @@ export async function POST(request: NextRequest) {
     if (shareError) {
       console.error('Error adding shared collection:', shareError)
       const response = NextResponse.json({ error: 'Failed to add collection' }, { status: 500 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const response = NextResponse.json({
@@ -143,10 +135,10 @@ export async function POST(request: NextRequest) {
       role,
       sharedCollection
     })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   } catch (error) {
     console.error('API error:', error)
     const response = NextResponse.json({ error: 'Internal server error' }, { status: 500 })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   }
 }

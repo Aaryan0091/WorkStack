@@ -12,6 +12,8 @@ export default function AuthCallbackPage() {
   const [errorMessage, setErrorMessage] = useState('')
 
   useEffect(() => {
+    const timeoutIds: ReturnType<typeof setTimeout>[] = []
+
     const handleCallback = async () => {
       try {
         // The OAuth callback will be handled by Supabase automatically
@@ -21,9 +23,9 @@ export default function AuthCallbackPage() {
         if (error) {
           setStatus('error')
           setErrorMessage(error.message)
-          setTimeout(() => {
+          timeoutIds.push(setTimeout(() => {
             router.push('/login?error=' + encodeURIComponent(error.message))
-          }, 2000)
+          }, 2000))
           return
         }
 
@@ -34,10 +36,10 @@ export default function AuthCallbackPage() {
 
           // Check if there's a redirect URL
           const redirectTo = searchParams.get('redirect') || '/'
-          setTimeout(() => {
+          timeoutIds.push(setTimeout(() => {
             router.push(redirectTo)
             router.refresh()
-          }, 500)
+          }, 500))
         } else {
           // No session, might need to handle the code manually
           const code = searchParams.get('code')
@@ -47,38 +49,42 @@ export default function AuthCallbackPage() {
             if (exchangeError) {
               setStatus('error')
               setErrorMessage(exchangeError.message)
-              setTimeout(() => {
+              timeoutIds.push(setTimeout(() => {
                 router.push('/login?error=' + encodeURIComponent(exchangeError.message))
-              }, 2000)
+              }, 2000))
               return
             }
 
             if (data.session) {
               setStatus('success')
               markUserSignedIn()
-              setTimeout(() => {
+              timeoutIds.push(setTimeout(() => {
                 router.push('/')
                 router.refresh()
-              }, 500)
+              }, 500))
             }
           } else {
             setStatus('error')
             setErrorMessage('No session found')
-            setTimeout(() => {
+            timeoutIds.push(setTimeout(() => {
               router.push('/login')
-            }, 2000)
+            }, 2000))
           }
         }
       } catch (err) {
         setStatus('error')
         setErrorMessage(err instanceof Error ? err.message : 'Authentication failed')
-        setTimeout(() => {
+        timeoutIds.push(setTimeout(() => {
           router.push('/login?error=' + encodeURIComponent('Authentication failed'))
-        }, 2000)
+        }, 2000))
       }
     }
 
     handleCallback()
+
+    return () => {
+      timeoutIds.forEach(id => clearTimeout(id))
+    }
   }, [router, searchParams])
 
   return (

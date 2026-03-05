@@ -1,20 +1,12 @@
 import { createClient } from '@supabase/supabase-js'
-import { NextRequest, NextResponse } from 'next/server'
-import { apiSuccess, withApiHandler, ApiError } from '@/lib/api-response'
+import { NextRequest } from 'next/server'
+import { apiSuccess, withApiHandler, ApiError, ENV, corsHeaders, handleOptionsRequest } from '@/lib/api-response'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
-
-function corsHeaders(response: NextResponse) {
-  response.headers.set('Access-Control-Allow-Origin', '*')
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  return response
-}
-
-export async function OPTIONS() {
-  return corsHeaders(new NextResponse(null, { status: 200 }))
+const supabaseUrl = ENV.SUPABASE_URL
+const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
+const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
+export async function OPTIONS(request: NextRequest) {
+  return handleOptionsRequest(request)
 }
 
 async function getUserFromToken(authHeader: string | null) {
@@ -84,7 +76,7 @@ export const GET = withApiHandler(async (request: NextRequest) => {
     },
     bookmarks,
     count: bookmarks.length
-  }))
+  }), request)
 })
 
 // PUT - Update collection sharing settings
@@ -143,13 +135,6 @@ export const PUT = withApiHandler(async (request: NextRequest, context?: { param
   return corsHeaders(apiSuccess({
     collection: data,
     shareUrl: is_public ? `${request.nextUrl.origin}/shared/${data.share_slug}` : null
-  }, 'Collection sharing updated'))
+  }, 'Collection sharing updated'), request)
 })
 
-// Generate unique share slug
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function generateShareSlug(name: string): string {
-  const normalized = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
-  const randomSuffix = Math.random().toString(36).substr(2, 9)
-  return `${normalized}-${randomSuffix}`
-}

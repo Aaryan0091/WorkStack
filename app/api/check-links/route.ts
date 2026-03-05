@@ -1,9 +1,11 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
+import { ENV } from '@/lib/api-response'
+
+const supabaseUrl = ENV.SUPABASE_URL
+const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
+const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
 
 // Helper to check if a URL is accessible
 async function checkUrl(url: string): Promise<{ alive: boolean; status?: number; error?: string }> {

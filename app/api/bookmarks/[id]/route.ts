@@ -2,21 +2,13 @@ import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 import { cleanupUnusedTags } from '@/lib/ai-tagging'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
+import { ENV, corsHeaders, handleOptionsRequest } from '@/lib/api-response'
 
-// Add CORS headers
-function corsHeaders(response: NextResponse) {
-  response.headers.set('Access-Control-Allow-Origin', '*')
-  response.headers.set('Access-Control-Allow-Methods', 'GET, DELETE, PATCH, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  return response
-}
-
-// Handle OPTIONS preflight request
-export async function OPTIONS() {
-  return corsHeaders(new NextResponse(null, { status: 200 }))
+const supabaseUrl = ENV.SUPABASE_URL
+const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
+const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
+export async function OPTIONS(request: NextRequest) {
+  return handleOptionsRequest(request)
 }
 
 // Verify auth token and get user
@@ -48,14 +40,14 @@ export async function DELETE(
 
     if (!user) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const { id } = await params
 
     if (!id) {
       const response = NextResponse.json({ error: 'Bookmark ID is required' }, { status: 400 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
@@ -70,7 +62,7 @@ export async function DELETE(
 
     if (!bookmark) {
       const response = NextResponse.json({ error: 'Bookmark not found' }, { status: 404 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // Delete the bookmark (cascade will handle bookmark_tags)
@@ -79,18 +71,18 @@ export async function DELETE(
     if (deleteError) {
       console.error('Delete error:', deleteError)
       const response = NextResponse.json({ error: deleteError.message }, { status: 500 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // Cleanup unused tags in background
     cleanupUnusedTags(user.id).catch((err) => console.error('Cleanup error:', err))
 
     const response = NextResponse.json({ success: true })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   } catch (error) {
     console.error('API error:', error)
     const response = NextResponse.json({ error: 'Internal server error' }, { status: 500 })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   }
 }
 
@@ -105,14 +97,14 @@ export async function PATCH(
 
     if (!user) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const { id } = await params
 
     if (!id) {
       const response = NextResponse.json({ error: 'Bookmark ID is required' }, { status: 400 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const body = await request.json()
@@ -142,19 +134,19 @@ export async function PATCH(
     if (error) {
       console.error('Update error:', error)
       const response = NextResponse.json({ error: error.message }, { status: 500 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     if (!data) {
       const response = NextResponse.json({ error: 'Bookmark not found' }, { status: 404 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const response = NextResponse.json({ success: true, bookmark: data })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   } catch (error) {
     console.error('API error:', error)
     const response = NextResponse.json({ error: 'Internal server error' }, { status: 500 })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   }
 }

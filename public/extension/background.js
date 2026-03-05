@@ -42,7 +42,7 @@ async function processNextApiCall(tabId) {
     if (queue.length > 1) {
       processNextApiCall(tabId)
     }
-  } catch (error) {
+  } catch {
     apiCallQueue.set(tabId, queue.slice(1))
     if (apiCallQueue.get(tabId)?.length > 0) {
       processNextApiCall(tabId)
@@ -89,7 +89,7 @@ function extractDomain(url) {
   try {
     const urlObj = new URL(url)
     return urlObj.hostname
-  } catch (e) {
+  } catch {
     return url
   }
 }
@@ -174,7 +174,7 @@ function syncTabToServer(tabId, isNewEntry = false) {
         },
         body: data
       })
-    } catch (error) {
+    } catch {
       // Network error - will retry on next sync interval
       return
     }
@@ -408,11 +408,15 @@ function stopTracking(callback) {
     if (activeTab) {
       activeTab.totalTime += Date.now() - currentTabStartTime
     }
-    // Do a final sync for the active tab
-    syncTabToServer(currentTabId)
   }
 
-  // Small delay to allow final sync to complete
+  // Sync ALL tracked tabs to server (not just the active one)
+  const allTabIds = Array.from(tabTimes.keys())
+  for (const tabId of allTabIds) {
+    syncTabToServer(tabId)
+  }
+
+  // Delay to allow final sync to complete (increased from 500ms to 2000ms)
   setTimeout(() => {
     // Save current tabs for resume
     const currentTabs = getActiveTabsArray()
@@ -508,7 +512,7 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     if (tab.url && !isSpecialUrl(tab.url)) {
       makeTabActive(tab)
     }
-  } catch (error) {
+  } catch {
     // Error on tab activated, continue
   }
 })

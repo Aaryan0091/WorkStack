@@ -1,9 +1,7 @@
 import { notFound } from 'next/navigation'
 import { createClient } from '@supabase/supabase-js'
-import { DashboardLayout } from '@/components/dashboard-layout'
-import { Card, CardContent } from '@/components/ui/card'
-import type { Bookmark, Collection } from '@/lib/types'
 import { SharedCollectionClient } from './shared-collection-client'
+import type { Bookmark } from '@/lib/types'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!

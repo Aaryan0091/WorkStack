@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { getExtensionId } from '@/lib/extension-detect'
 
+const isDev = process.env.NODE_ENV === 'development'
+
 export function ExtensionSync() {
   const syncAttempted = useRef(false)
 
@@ -25,7 +27,7 @@ export function ExtensionSync() {
         }
 
         if (!session?.access_token) {
-          console.log('Extension sync: No active session')
+          if (isDev) console.log('Extension sync: No active session')
           return
         }
 
@@ -33,7 +35,7 @@ export function ExtensionSync() {
         const timeout = setTimeout(() => {
           if (!responded) {
             responded = true
-            console.log('Extension sync: No response (extension may not be installed)')
+            if (isDev) console.log('Extension sync: No response (extension may not be installed)')
           }
         }, 1000)
 
@@ -47,9 +49,9 @@ export function ExtensionSync() {
           clearTimeout(timeout)
 
           if (chrome.runtime?.lastError) {
-            console.log('Extension sync: Extension not reachable')
+            if (isDev) console.log('Extension sync: Extension not reachable')
           } else if (response?.success) {
-            console.log('Extension sync: Auth token synced successfully')
+            if (isDev) console.log('Extension sync: Auth token synced successfully')
           }
         })
       } catch (error) {
@@ -65,7 +67,7 @@ export function ExtensionSync() {
 
     // Listen for auth state changes and sync token
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: { access_token?: string } | null) => {
-      console.log('Auth state changed:', event)
+      if (isDev) console.log('Auth state changed:', event)
 
       if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN' || event === 'USER_UPDATED') {
         if (session?.access_token) {
@@ -73,11 +75,11 @@ export function ExtensionSync() {
             action: 'storeAuthToken',
             authToken: session.access_token,
             apiBaseUrl: window.location.origin
-          }, (response: { success?: boolean } | undefined) => {
+          }, () => {
             if (chrome.runtime?.lastError) {
-              console.log('Extension sync: Failed to sync token after auth change')
+              if (isDev) console.log('Extension sync: Failed to sync token after auth change')
             } else {
-              console.log('Extension sync: Token synced after', event)
+              if (isDev) console.log('Extension sync: Token synced after', event)
             }
           })
         }

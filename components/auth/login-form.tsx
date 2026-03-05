@@ -58,7 +58,7 @@ export function LoginForm() {
             action: 'storeAuthToken',
             authToken: session.access_token,
             apiBaseUrl
-          }, (response: ChromeMessageResponse) => {
+          }, () => {
             if (responded) return
             responded = true
             clearTimeout(timeout)
@@ -80,7 +80,7 @@ export function LoginForm() {
     setLoading(true)
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
       })

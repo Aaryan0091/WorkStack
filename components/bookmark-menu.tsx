@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 
 interface BookmarkMenuProps {
-  bookmarkId: string
   isFavorite: boolean
   isRead: boolean
   onToggleFavorite: () => void
@@ -14,7 +13,6 @@ interface BookmarkMenuProps {
 }
 
 export function BookmarkMenu({
-  bookmarkId,
   isFavorite,
   isRead,
   onToggleFavorite,
@@ -76,11 +74,6 @@ export function BookmarkMenu({
       document.removeEventListener('keydown', handleEscape)
     }
   }, [isOpen])
-
-  const handleAction = (action: () => void) => {
-    action()
-    closeMenu()
-  }
 
   return (
     <>

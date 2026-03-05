@@ -39,6 +39,7 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTag
   const [tagInput, setTagInput] = useState('')
   const [formError, setFormError] = useState('')
   const processedUrlParams = useRef(false)
+  const urlParamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [tagContextMenu, setTagContextMenu] = useState<{ x: number; y: number; tagId: string } | null>(null)
   const [tagAdded, setTagAdded] = useState(false)
 
@@ -51,7 +52,7 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTag
       processedUrlParams.current = true
       // Pre-fill form and open modal
       // Delay setState to avoid triggering during render
-      setTimeout(() => {
+      urlParamTimerRef.current = setTimeout(() => {
         setFormData({
           url: decodeURIComponent(addUrl),
           title: addTitle ? decodeURIComponent(addTitle) : '',
@@ -65,6 +66,10 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTag
 
       // Clear URL params
       window.history.replaceState({}, '', '/bookmarks')
+    }
+
+    return () => {
+      if (urlParamTimerRef.current) clearTimeout(urlParamTimerRef.current)
     }
   }, [searchParams])
 
@@ -260,7 +265,7 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTag
                     <img
                       src={`https://www.google.com/s2/favicons?domain=${new URL(bookmark.url).hostname}&sz=32`}
                       className="w-8 h-8 rounded"
-                      alt=""
+                      alt="Favicon"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                     />
                     <div className="flex-1 min-w-0">

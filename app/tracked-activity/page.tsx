@@ -23,7 +23,6 @@ export default function TrackedActivityPage() {
   const router = useRouter()
   const [activities, setActivities] = useState<TabActivity[]>([])
   const [loading, setLoading] = useState(false)
-  const [userId, setUserId] = useState<string | null>(null)
   const [isTracking, setIsTracking] = useState(false)
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('today')
   const [extensionInstalled, setExtensionInstalled] = useState<boolean | null>(null)
@@ -57,6 +56,7 @@ export default function TrackedActivityPage() {
     return title || url
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const clearHistory = async () => {
     const confirmed = confirm('Are you sure you want to clear your tracked activity history? This cannot be undone.')
     if (!confirmed) return
@@ -82,16 +82,14 @@ export default function TrackedActivityPage() {
           alert('Activity history cleared successfully!')
         }
       }
-    } catch (error) {
+    } catch {
       alert('Failed to clear history. Please try again.')
     }
   }
 
   const getCurrentUser = async () => {
     const { data: { user } } = await supabase.auth.getUser()
-    if (user) {
-      setUserId(user.id)
-    } else {
+    if (!user) {
       router.push('/login')
     }
   }
@@ -122,13 +120,14 @@ export default function TrackedActivityPage() {
           setActivities(result.data)
         }
       }
-    } catch (error) {
-      console.error('Failed to fetch activities:', error)
+    } catch {
+      // Error fetching activities
     }
 
     setLoading(false)
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const checkTrackingStatus = () => {
     const chromeWindow = window as typeof window & { chrome?: { runtime?: { sendMessage?: (id: string, msg: Record<string, unknown>, cb: (r: { isTracking?: boolean } | undefined) => void) => void; lastError?: { message?: string } } } }
     if (typeof window !== 'undefined' && chromeWindow.chrome?.runtime) {
@@ -364,10 +363,11 @@ export default function TrackedActivityPage() {
                       }}
                     >
                       <div className="flex items-start gap-4">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={`https://www.google.com/s2/favicons?domain=${getDomain(item.url)}&sz=32`}
                           className="w-10 h-10 rounded flex-shrink-0"
-                          alt=""
+                          alt="Favicon"
                           loading="lazy"
                         />
                         <div className="flex-1 min-w-0">

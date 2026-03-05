@@ -83,7 +83,7 @@ export function Sidebar() {
     // Use cached email to avoid repeated fetches
     getCachedEmail().then(e => {
       if (e) setEmail(e)
-    })
+    }).catch(() => {})
 
     // Prefetch all routes on mount for instant navigation
     navItems.forEach((item) => {
@@ -161,7 +161,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 p-3 space-y-1">
-        {navItems.map((item, index) => {
+        {navItems.map((item) => {
           const isActive = pathname === item.href
           const Icon = item.icon
           return (

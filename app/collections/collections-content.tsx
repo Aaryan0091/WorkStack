@@ -15,7 +15,7 @@ import {
   GUEST_KEYS,
   markGuestMode
 } from '@/lib/guest-storage'
-import { generateUUID, generateShortId } from '@/lib/utils'
+import { generateUUID } from '@/lib/utils'
 
 // Cache for faster loads
 const collectionsCache = {
@@ -87,6 +87,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   // Track user's role for each collection (owner/editor/viewer)
   const [collectionRoles, setCollectionRoles] = useState<Record<string, CollectionRole>>({})
   // Track removed collection IDs
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [removedCollectionIds, setRemovedCollectionIds] = useState<Set<string>>(new Set())
 
   // Visibility change confirmation state
@@ -128,7 +129,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
               description: 'Your first collection',
               is_public: false,
               share_slug: 'my-collection-' + generateUUID().substr(0, 8),
-              share_code: null,
+              share_code: Math.random().toString(36).substring(2, 10),
               created_at: new Date().toISOString()
             }
             guestStoreSet(GUEST_KEYS.COLLECTIONS, [defaultCollection])
@@ -223,18 +224,37 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       setCollections(uniqueCollections)
 
       // Then fetch only first 3 bookmarks per collection for preview (in parallel)
-      // Use junction table for many-to-many relationship
+      // Use junction table for many-to-many relationship, also check direct collection_id for backwards compatibility
       const bookmarkPromises = uniqueCollections.map(async (collection: Collection) => {
-        const { data } = await supabase
+        // Fetch from junction table
+        const { data: junctionData } = await supabase
           .from('collection_bookmarks')
           .select('bookmark_id, bookmarks(*), added_by')
           .eq('collection_id', collection.id)
-          .limit(10) // Fetch more to account for removed ones
+          .limit(10)
 
-        let bookmarks = data?.flatMap((jb: { bookmarks: Bookmark | Bookmark[] | null; added_by: string }) => {
+        let bookmarks = junctionData?.flatMap((jb: { bookmarks: Bookmark | Bookmark[] | null; added_by: string }) => {
           const bookmark = Array.isArray(jb.bookmarks) ? jb.bookmarks[0] : jb.bookmarks
           return bookmark ? [{ ...bookmark, added_by: jb.added_by }] : []
         }) || []
+
+        // Also fetch bookmarks with direct collection_id for backwards compatibility
+        const { data: directBookmarks } = await supabase
+          .from('bookmarks')
+          .select('*')
+          .eq('collection_id', collection.id)
+          .limit(3)
+
+        if (process.env.NODE_ENV === 'development') console.log(`Collection ${collection.id}: Junction=${bookmarks.length}, Direct=${directBookmarks?.length || 0}`)
+
+        // Merge both sources, avoiding duplicates
+        const seenIds = new Set(bookmarks.map((b: Bookmark) => b.id))
+        directBookmarks?.forEach((b: Bookmark) => {
+          if (!seenIds.has(b.id)) {
+            bookmarks.push({ ...b, added_by: b.user_id || '' } as typeof bookmarks[0])
+            seenIds.add(b.id)
+          }
+        })
 
         // If not the owner, filter out bookmarks the user has removed from their view
         if (collection.user_id !== user.id) {
@@ -289,6 +309,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     if (isGuest) return
 
     const refreshCollections = async () => {
+      try {
       // Invalidate cache so we get fresh data
       collectionsCache.data = null
       collectionsCache.timestamp = 0
@@ -345,7 +366,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
 
       setCollections(uniqueCollections)
 
-      // Fetch sample bookmarks for each collection via junction table
+      // Fetch sample bookmarks for each collection via junction table + direct collection_id
       const bookmarkPromises = uniqueCollections.map(async (collection: Collection) => {
         const { data } = await supabase
           .from('collection_bookmarks')
@@ -357,6 +378,22 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
           const bookmark = Array.isArray(jb.bookmarks) ? jb.bookmarks[0] : jb.bookmarks
           return bookmark ? [{ ...bookmark, added_by: jb.added_by }] : []
         }) || []
+
+        // Also fetch bookmarks with direct collection_id for backwards compatibility
+        const { data: directBookmarks } = await supabase
+          .from('bookmarks')
+          .select('*')
+          .eq('collection_id', collection.id)
+          .limit(10)
+
+        // Merge both sources, avoiding duplicates
+        const seenIds = new Set(bookmarks.map((b: Bookmark) => b.id))
+        directBookmarks?.forEach((b: Bookmark) => {
+          if (!seenIds.has(b.id)) {
+            bookmarks.push({ ...b, added_by: (b as Bookmark & { user_id?: string }).user_id || '' } as typeof bookmarks[0])
+            seenIds.add(b.id)
+          }
+        })
 
         // If not the owner, filter out bookmarks the user has removed from their view
         if (collection.user_id !== user.id) {
@@ -380,6 +417,12 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       })
 
       setCollectionBookmarks(bookmarksMap)
+      } catch (err) {
+        // Silently handle transient network errors during background refresh
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('Collections refresh failed:', err)
+        }
+      }
     }
 
     const channel = supabase
@@ -408,8 +451,8 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       )
       .subscribe()
 
-    // Polling as backup - refresh every 1 second for reliable updates across all users
-    const pollInterval = setInterval(refreshCollections, 1000)
+    // Polling as backup - refresh every 30 seconds for reliable updates across all users
+    const pollInterval = setInterval(refreshCollections, 30000)
 
     return () => {
       supabase.removeChannel(channel)
@@ -1010,6 +1053,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     return ''
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const copyShareUrl = async (collection: Collection, e: React.MouseEvent) => {
     e.stopPropagation()
     const url = shareUrl(collection)
@@ -1390,6 +1434,14 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
         </div>
       </div>
 
+      {/* Guest Mode Warning */}
+      {isGuest && (
+        <div className="p-3 rounded-lg text-sm flex items-center justify-between" style={{ backgroundColor: 'rgba(251, 146, 60, 0.1)', border: '1px solid rgba(251, 146, 60, 0.3)' }}>
+          <span style={{ color: '#ea580c' }}>⚠️ Guest mode: Your collections will be lost when you close the tab.</span>
+          <a href="/login" className="px-3 py-1 rounded bg-blue-600 text-white text-sm hover:bg-blue-700 transition-colors">Sign in to save</a>
+        </div>
+      )}
+
       {/* Loading Skeleton */}
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1635,10 +1687,22 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
 
                           const existingIds = new Set(existingInCollection?.map((c: { bookmark_id: string }) => c.bookmark_id) || [])
 
+                          // Also include bookmarks with direct collection_id (backwards compat)
+                          const { data: directInCollection } = await supabase
+                            .from('bookmarks')
+                            .select('id')
+                            .eq('collection_id', collection.id)
+
+                          directInCollection?.forEach((b: { id: string }) => existingIds.add(b.id))
+
+                          // Fetch current user
+                          const { data: { user: currentUser } } = await supabase.auth.getUser()
+
                           // Fetch all user's bookmarks, then filter out the ones already in this collection
                           const { data } = await supabase
                             .from('bookmarks')
                             .select('*')
+                            .eq('user_id', currentUser!.id)
                             .order('title', { ascending: true })
 
                           // Filter out bookmarks already in this collection
@@ -1884,7 +1948,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                           <img
                             src={`https://www.google.com/s2/favicons?domain=${getDomain(bookmark.url)}&sz=32`}
                             className="w-8 h-8"
-                            alt=""
+                            alt="Favicon"
                             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                           />
                         </div>

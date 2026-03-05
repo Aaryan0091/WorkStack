@@ -1,9 +1,10 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
+import { ENV } from '@/lib/api-response'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
+const supabaseUrl = ENV.SUPABASE_URL
+const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
+const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
 
 export async function GET(request: NextRequest) {
   try {
@@ -30,7 +31,7 @@ export async function GET(request: NextRequest) {
     })
 
     if (queryError) {
-      console.log('RPC not found, using parallel queries as fallback')
+      if (process.env.NODE_ENV === 'development') console.log('RPC not found, using parallel queries as fallback')
       // Fallback: parallel queries
       const [totalRes, favoritesRes, unreadRes] = await Promise.all([
         supabaseAdmin.from('bookmarks').select('id', { count: 'exact', head: true }).eq('user_id', user.id),

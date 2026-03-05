@@ -1,19 +1,13 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
+import { ENV, corsHeaders, handleOptionsRequest } from '@/lib/api-response'
 
-function corsHeaders(response: NextResponse) {
-  response.headers.set('Access-Control-Allow-Origin', '*')
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  return response
-}
-
-export async function OPTIONS() {
-  return corsHeaders(new NextResponse(null, { status: 200 }))
+const supabaseUrl = ENV.SUPABASE_URL
+const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
+const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
+export async function OPTIONS(request: NextRequest) {
+  return handleOptionsRequest(request)
 }
 
 async function getUserFromToken(authHeader: string | null) {
@@ -41,7 +35,7 @@ export async function GET(request: NextRequest) {
 
     if (!user) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const { searchParams } = new URL(request.url)
@@ -59,11 +53,11 @@ export async function GET(request: NextRequest) {
 
       if (error) {
         const response = NextResponse.json({ error: error.message }, { status: 500 })
-        return corsHeaders(response)
+        return corsHeaders(response, request)
       }
 
       const response = NextResponse.json({ collections: data || [] })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // Otherwise, try to find existing default collection
@@ -76,11 +70,12 @@ export async function GET(request: NextRequest) {
 
     if (existing) {
       const response = NextResponse.json({ collection: existing })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // Create default collection
     const share_slug = 'default-' + Math.random().toString(36).substr(2, 9)
+    const share_code = Math.random().toString(36).substring(2, 10)
 
     const { data, error } = await supabase
       .from('collections')
@@ -89,6 +84,7 @@ export async function GET(request: NextRequest) {
         description: 'Your default collection for quick saves',
         is_public: false,
         share_slug,
+        share_code,
         user_id: user.id,
       })
       .select()
@@ -96,17 +92,17 @@ export async function GET(request: NextRequest) {
 
     if (error) {
       const response = NextResponse.json({ error: error.message }, { status: 500 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const response = NextResponse.json({ collection: data })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   } catch (error) {
     if (process.env.NODE_ENV === 'development') {
       console.error('API error:', error)
     }
     const response = NextResponse.json({ error: 'Internal server error' }, { status: 500 })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   }
 }
 
@@ -118,7 +114,7 @@ export async function POST(request: NextRequest) {
 
     if (!user) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const body = await request.json()
@@ -126,7 +122,7 @@ export async function POST(request: NextRequest) {
 
     if (!url) {
       const response = NextResponse.json({ error: 'URL is required' }, { status: 400 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
@@ -141,6 +137,7 @@ export async function POST(request: NextRequest) {
 
     if (!collection.data) {
       const share_slug = 'default-' + Math.random().toString(36).substr(2, 9)
+      const share_code = Math.random().toString(36).substring(2, 10)
       const newCollection = await supabase
         .from('collections')
         .insert({
@@ -148,6 +145,7 @@ export async function POST(request: NextRequest) {
           description: 'Your default collection for quick saves',
           is_public: false,
           share_slug,
+          share_code,
           user_id: user.id,
         })
         .select()
@@ -155,7 +153,7 @@ export async function POST(request: NextRequest) {
 
       if (newCollection.error) {
         const response = NextResponse.json({ error: newCollection.error.message }, { status: 500 })
-        return corsHeaders(response)
+        return corsHeaders(response, request)
       }
       collection = newCollection
     }
@@ -199,7 +197,7 @@ export async function POST(request: NextRequest) {
 
       if (error) {
         const response = NextResponse.json({ error: error.message }, { status: 500 })
-        return corsHeaders(response)
+        return corsHeaders(response, request)
       }
       bookmark = data
     }
@@ -210,12 +208,12 @@ export async function POST(request: NextRequest) {
       collection: collection.data,
       message: existingBookmark ? 'Added to collection' : 'Created and added to collection'
     })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   } catch (error) {
     if (process.env.NODE_ENV === 'development') {
       console.error('API error:', error)
     }
     const response = NextResponse.json({ error: 'Internal server error' }, { status: 500 })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   }
 }

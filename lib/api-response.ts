@@ -13,6 +13,14 @@ if (!supabaseUrl || !supabaseAnonKey) {
 const SUPABASE_URL: string = supabaseUrl
 const SUPABASE_ANON_KEY: string = supabaseAnonKey
 
+// Exported validated env vars for API routes (avoids ! assertions)
+export const ENV = {
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+  SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY || supabaseAnonKey,
+  GROQ_API_KEY: process.env.GROQ_API_KEY || '',
+} as const
+
 /**
  * Standard API response types
  */

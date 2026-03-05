@@ -1,15 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Modal } from '@/components/ui/modal'
-import { Button } from '@/components/ui/button'
 import type { Bookmark, Collection } from '@/lib/types'
 import {
   markUserSignedIn,
   guestStoreGet,
-  guestStoreRemove,
   GUEST_KEYS,
   clearGuestData
 } from '@/lib/guest-storage'
@@ -22,6 +20,13 @@ export function GuestSyncPrompt() {
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState<{ bookmarks: number; collections: number } | null>(null)
   const [hasGuestData, setHasGuestData] = useState(false)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     // Check if user is logged in and has guest data
@@ -97,7 +102,7 @@ export function GuestSyncPrompt() {
         localStorage.setItem(SYNC_SHOWN_KEY, 'true')
 
         // Close modal after a delay to show success
-        setTimeout(() => {
+        syncTimerRef.current = setTimeout(() => {
           setIsOpen(false)
           router.refresh()
         }, 2000)
@@ -155,6 +160,7 @@ export function GuestSyncPrompt() {
             <button
               onClick={handleDismiss}
               disabled={syncing}
+              type="button"
               className="flex-1 px-4 py-3 rounded-lg font-medium transition-all active:scale-95"
               style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)', cursor: 'pointer' }}
             >
@@ -163,6 +169,7 @@ export function GuestSyncPrompt() {
             <button
               onClick={handleSync}
               disabled={syncing}
+              type="button"
               className="flex-1 px-4 py-3 rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
               style={{ backgroundColor: 'var(--color-primary)', color: 'white', cursor: 'pointer' }}
             >

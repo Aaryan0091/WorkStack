@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useRef, useMemo, useTransition, startTransition, lazy, Suspense } from 'react'
+import { useEffect, useState, useRef, useMemo, lazy, Suspense } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
@@ -19,7 +19,6 @@ import {
 
 // Lazy load heavy chart component for faster initial load
 const ChartWithToggle = lazy(() => import('@/components/dashboard/charts').then(m => ({ default: m.ChartWithToggle })))
-type ChartData = import('@/components/dashboard/charts').ChartData
 
 // Time-based greeting for personal touch
 function getGreeting(): string {
@@ -77,7 +76,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const tokenSyncTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const extensionCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const stopTrackingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const isPollingRef = useRef(false) // Track if polling is already active
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
 
   // Check if browser is Chromium-based AND not mobile (supports Chrome extensions)
@@ -134,7 +132,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           if (storedCollections) {
             setCollections(storedCollections)
           }
-        } catch (e) {
+        } catch {
           // Error loading guest data
         }
         return
@@ -248,7 +246,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
               setHasServerActivity(true)
             }
           }
-        } catch (e) {
+        } catch {
           // Silently ignore error
         }
       }
@@ -313,7 +311,10 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       if (statusCheckTimerRef.current) clearTimeout(statusCheckTimerRef.current)
       if (tokenSyncTimeoutRef.current) clearTimeout(tokenSyncTimeoutRef.current)
       if (extensionCheckTimeoutRef.current) clearTimeout(extensionCheckTimeoutRef.current)
-      if (stopTrackingTimeoutRef.current) clearTimeout(stopTrackingTimeoutRef.current)
+      // Capture ref value locally to avoid stale closure
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      const stopTrackingTimeout = stopTrackingTimeoutRef.current
+      if (stopTrackingTimeout) clearTimeout(stopTrackingTimeout)
 
       // Clear interval
       if (checkIntervalRef.current) {
@@ -336,6 +337,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       }
 
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Store auth token in extension
@@ -357,14 +359,10 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       action: 'storeAuthToken',
       authToken: token,
       apiBaseUrl: window.location.origin
-    }, (response: { success?: boolean; isTracking?: boolean; isPaused?: boolean; savedSession?: boolean } | undefined) => {
+    }, () => {
       if (responded) return
       responded = true
       if (tokenSyncTimeoutRef.current) clearTimeout(tokenSyncTimeoutRef.current)
-
-      if (chrome.runtime?.lastError) {
-      } else {
-      }
     })
   }
 
@@ -584,7 +582,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       if (data) {
         setPreviousActivityData(data)
       }
-    } catch (error) {
+    } catch {
       // Error fetching previous activity
     } finally {
       setLoadingPreviousActivity(false)
@@ -631,7 +629,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           const updatedAll = stored.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b)
           guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
         }
-      } catch (e) {
+      } catch {
         // Error saving to localStorage
       }
       fetchFreshData()
@@ -653,7 +651,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           const updatedAll = stored.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b)
           guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
         }
-      } catch (e) {
+      } catch {
         // Error saving to localStorage
       }
       fetchFreshData()
@@ -674,7 +672,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           const updatedAll = stored.filter((b: Bookmark) => b.id !== id)
           guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
         }
-      } catch (e) {
+      } catch {
         // Error saving to localStorage
       }
       fetchFreshData()
@@ -921,10 +919,11 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                     style={{ borderColor: 'var(--border-color)' }}
                   >
                     <div className="flex items-start gap-3">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={`https://www.google.com/s2/favicons?domain=${getDomain(tab.url)}&sz=32`}
                         className="w-5 h-5 rounded mt-0.5 flex-shrink-0"
-                        alt=""
+                        alt="Favicon"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                       />
                       <div className="flex-1 min-w-0">
@@ -1044,10 +1043,11 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                   >
                     <CardContent className="p-4">
                       <div className="flex items-center gap-4">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={`https://www.google.com/s2/favicons?domain=${safeGetHostname(bookmark.url)}&sz=32`}
                           className="w-8 h-8 rounded flex-shrink-0"
-                          alt=""
+                          alt="Favicon"
                           onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
                         />
                         <div className="flex-1 min-w-0">
@@ -1058,7 +1058,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                         </div>
                         <div onClick={(e) => e.stopPropagation()}>
                           <BookmarkMenu
-                            bookmarkId={bookmark.id}
                             isFavorite={bookmark.is_favorite}
                             isRead={bookmark.is_read}
                             onToggleFavorite={() => toggleFavorite(bookmark)}
@@ -1263,10 +1262,11 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3 flex-1 min-w-0">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={`https://www.google.com/s2/favicons?domain=${item.domain}&sz=32`}
                           className="w-6 h-6 rounded flex-shrink-0"
-                          alt=""
+                          alt="Favicon"
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
@@ -1286,9 +1286,13 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                       </div>
                       <div className="text-right ml-3 flex-shrink-0">
                         <p className="text-sm font-medium" style={{ color: '#8b5cf6' }}>
-                          {item.totalSeconds >= 3600
+                          {item.totalSeconds < 60
+                            ? `${item.totalSeconds}s`
+                            : item.totalSeconds >= 3600
                             ? `${Math.floor(item.totalSeconds / 3600)}h ${Math.floor((item.totalSeconds % 3600) / 60)}m`
-                            : `${Math.floor(item.totalSeconds / 60)}m`}
+                            : item.totalSeconds % 60 === 0
+                            ? `${Math.floor(item.totalSeconds / 60)}m`
+                            : `${Math.floor(item.totalSeconds / 60)}m ${item.totalSeconds % 60}s`}
                         </p>
                         <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                           total time

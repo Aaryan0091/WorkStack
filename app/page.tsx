@@ -1,6 +1,5 @@
 import { Suspense } from 'react'
 import { DashboardContent } from './dashboard-content'
-import { DashboardLayout } from '@/components/dashboard-layout'
 
 export default function HomePage() {
   // Allow guest users - no server-side data fetching needed

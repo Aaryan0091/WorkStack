@@ -2,10 +2,12 @@ import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 import { expandSearchQuery } from '@/lib/ai-tagging'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!
-const GROQ_API_KEY = process.env.GROQ_API_KEY!
+import { ENV, corsHeaders, handleOptionsRequest } from '@/lib/api-response'
+
+const supabaseUrl = ENV.SUPABASE_URL
+const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
+const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
+const GROQ_API_KEY = ENV.GROQ_API_KEY
 
 interface Bookmark {
   id: string
@@ -21,18 +23,8 @@ interface ScoredBookmark extends Bookmark {
 }
 
 type SearchMode = 'semantic' | 'tags' | 'name' | 'all'
-
-// Add CORS headers
-function corsHeaders(response: NextResponse) {
-  response.headers.set('Access-Control-Allow-Origin', '*')
-  response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-  response.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
-  return response
-}
-
-// Handle OPTIONS preflight request
-export async function OPTIONS() {
-  return corsHeaders(new NextResponse(null, { status: 200 }))
+export async function OPTIONS(request: NextRequest) {
+  return handleOptionsRequest(request)
 }
 
 // Verify auth token and get user
@@ -61,7 +53,7 @@ export async function POST(request: NextRequest) {
     const user = await getUserFromToken(authHeader)
     if (!user) {
       const response = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const body = await request.json()
@@ -69,7 +61,7 @@ export async function POST(request: NextRequest) {
 
     if (!query || query.trim().length === 0) {
       const response = NextResponse.json({ error: 'Query is required' }, { status: 400 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
@@ -100,7 +92,7 @@ export async function POST(request: NextRequest) {
     if (error) {
       console.error('Search error:', error)
       const response = NextResponse.json({ error: error.message }, { status: 500 })
-      return corsHeaders(response)
+      return corsHeaders(response, request)
     }
 
     // Score bookmarks based on mode
@@ -212,10 +204,10 @@ export async function POST(request: NextRequest) {
       mode,
       count: results.length,
     })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   } catch (error) {
     console.error('Search error:', error)
     const response = NextResponse.json({ error: 'Search failed' }, { status: 500 })
-    return corsHeaders(response)
+    return corsHeaders(response, request)
   }
 }

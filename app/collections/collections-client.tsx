@@ -135,6 +135,7 @@ export function CollectionsClient({ collections: initialCollections, bookmarks: 
     setPendingBookmark(null)
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const removeFromCollection = async (bookmarkId: string) => {
     await supabase.from('bookmarks').update({ collection_id: null }).eq('id', bookmarkId)
     setBookmarks(bookmarks.map(b => b.id === bookmarkId ? { ...b, collection_id: null } : b))

@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Bookmark, Collection } from '@/lib/types'
@@ -16,7 +15,6 @@ interface BookmarkWithTags extends Bookmark {
 }
 
 export default function SmartSearchPage() {
-  const router = useRouter()
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<SearchMode>('all')
   const [results, setResults] = useState<BookmarkWithTags[]>([])
@@ -30,33 +28,37 @@ export default function SmartSearchPage() {
   // Load collections and all bookmarks on mount
   useEffect(() => {
     const loadData = async () => {
-      // Get current user
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
+      try {
+        // Get current user
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) return
 
-      const { data: collectionsData } = await supabase.from('collections').select('*').order('name')
-      if (collectionsData) setCollections(collectionsData)
+        const { data: collectionsData } = await supabase.from('collections').select('*').order('name')
+        if (collectionsData) setCollections(collectionsData)
 
-      // Fetch user's bookmarks with tags
-      const { data: bookmarksData } = await supabase
-        .from('bookmarks')
-        .select(`
-          *,
-          collections (id, name),
-          bookmark_tags (
-            tags (
-              id,
-              name,
-              color
+        // Fetch user's bookmarks with tags
+        const { data: bookmarksData } = await supabase
+          .from('bookmarks')
+          .select(`
+            *,
+            collections (id, name),
+            bookmark_tags (
+              tags (
+                id,
+                name,
+                color
+              )
             )
-          )
-        `)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
+          `)
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
 
-      if (bookmarksData) {
-        setAllBookmarks(bookmarksData as BookmarkWithTags[])
-        setResults(bookmarksData as BookmarkWithTags[])
+        if (bookmarksData) {
+          setAllBookmarks(bookmarksData as BookmarkWithTags[])
+          setResults(bookmarksData as BookmarkWithTags[])
+        }
+      } catch (err) {
+        if (process.env.NODE_ENV === 'development') console.error('Failed to load data:', err)
       }
     }
     loadData()
@@ -391,10 +393,11 @@ export default function SmartSearchPage() {
                   <div className="flex items-start gap-3">
                     {/* Favicon with fallback */}
                     <div className="w-8 h-8 rounded flex items-center justify-center text-sm font-semibold flex-shrink-0" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)', minWidth: '32px' }}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={`https://www.google.com/s2/favicons?domain=${getDomain(bookmark.url)}&sz=32`}
                         className="w-8 h-8 rounded"
-                        alt=""
+                        alt="Favicon"
                         style={{ display: 'block' }}
                         onError={(e) => {
                           const img = e.target as HTMLImageElement

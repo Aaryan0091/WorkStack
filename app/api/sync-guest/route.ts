@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
-import type { Bookmark, Collection } from '@/lib/types'
 
 // Guest data types (from localStorage, may not have all fields)
 interface GuestBookmark {
