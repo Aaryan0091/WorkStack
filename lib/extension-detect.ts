@@ -26,8 +26,9 @@ export interface ExtensionResponse {
   [key: string]: unknown
 }
 
-// Known extension IDs for Chrome Web Store and production
-const PRODUCTION_EXTENSION_ID = process.env.NEXT_PUBLIC_EXTENSION_ID || 'llahljdmcglglkcaadldnbpcpnkdinco'
+// Production extension ID from environment variable
+// Users must set NEXT_PUBLIC_EXTENSION_ID to their published extension ID
+const PRODUCTION_EXTENSION_ID = process.env.NEXT_PUBLIC_EXTENSION_ID || ''
 
 let cachedExtensionId: string | null = null
 let extensionInstalledByPostMessage = false
