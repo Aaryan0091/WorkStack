@@ -305,6 +305,15 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       }
     })
 
+    // Re-check extension status immediately when tab becomes visible again
+    // (browser throttles setInterval to ~1/min for background tabs)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkExtensionStatus()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
     return () => {
       // Clear all timeouts
       if (initTimerRef.current) clearTimeout(initTimerRef.current)
@@ -322,10 +331,11 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         checkIntervalRef.current = null
       }
 
-      // Remove event listener
+      // Remove event listeners
       if (handlerRef.current) {
         window.removeEventListener('workstack-extension-loaded', handlerRef.current)
       }
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
 
       // Unsubscribe from auth changes
       subscription.unsubscribe()

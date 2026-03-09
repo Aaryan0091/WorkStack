@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Explicitly set workspace root to avoid incorrect inference from parent lockfiles
+  turbopack: {
+    root: import.meta.dirname,
+  },
+
   // Performance optimizations
   compress: true,
   poweredByHeader: false,

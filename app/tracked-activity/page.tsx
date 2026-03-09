@@ -157,6 +157,18 @@ export default function TrackedActivityPage() {
     getCurrentUser()
     checkExtensionStatus()
     fetchActivities()
+
+    // Re-fetch when tab becomes visible again (handles background tab throttling)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchActivities()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

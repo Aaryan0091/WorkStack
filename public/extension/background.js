@@ -503,6 +503,14 @@ function openUrls(urls) {
 
 // ========== EVENT LISTENERS ==========
 
+// When a new tab is created (catches tabs opened with a URL, e.g. Ctrl+click)
+chrome.tabs.onCreated.addListener((tab) => {
+  if (!isTracking || isPaused) return
+  if (!tab.url || isSpecialUrl(tab.url)) return
+  if (!tab.id || tabTimes.has(tab.id)) return
+  makeTabActive(tab)
+})
+
 // When tab is activated (switched to)
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   if (!isTracking || isPaused) return
@@ -524,7 +532,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!tab.url) return
 
   const tabData = tabTimes.get(tabId)
-  if (!tabData) return
+  if (!tabData) {
+    // Tab wasn't tracked yet (e.g. opened as chrome://newtab then navigated to a real URL).
+    // Start tracking it now so the first visit is captured.
+    makeTabActive(tab)
+    return
+  }
 
   const oldUrl = tabData.url
   const newUrl = tab.url
