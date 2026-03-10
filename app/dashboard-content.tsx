@@ -277,7 +277,14 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
               fetchFreshData()
             }
           )
-          .subscribe()
+          .subscribe((status: string) => {
+            // Reconnect if channel errors out (e.g. after idle/network change)
+            if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+              setTimeout(() => {
+                channel.subscribe()
+              }, 3000)
+            }
+          })
 
         channelRef.current = channel
       }
@@ -305,11 +312,12 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       }
     })
 
-    // Re-check extension status immediately when tab becomes visible again
+    // Re-check extension status and refresh data when tab becomes visible again
     // (browser throttles setInterval to ~1/min for background tabs)
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         checkExtensionStatus()
+        fetchFreshData()
       }
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)

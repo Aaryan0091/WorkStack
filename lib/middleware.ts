@@ -12,7 +12,7 @@ export async function updateSession(request: NextRequest) {
   const hasAuthCookie = !!authCookie
 
   // Create response
-  const supabaseResponse = NextResponse.next({
+  let supabaseResponse = NextResponse.next({
     request,
   })
 
@@ -23,28 +23,29 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  // For all other routes, allow access (guest mode enabled)
-  // Just set up Supabase client for cookie handling if needed
+  // Refresh the session cookie on every request to prevent token expiry during idle
   if (hasAuthCookie) {
-    createServerClient(
+    const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
         cookies: {
-          get(name: string) {
-            return request.cookies.get(name)?.value
+          getAll() {
+            return request.cookies.getAll()
           },
-          set(name: string, value: string) {
-            request.cookies.set(name, value)
-            supabaseResponse.cookies.set(name, value)
-          },
-          remove(name: string) {
-            request.cookies.delete(name)
-            supabaseResponse.cookies.delete(name)
+          setAll(cookiesToSet) {
+            cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
+            supabaseResponse = NextResponse.next({ request })
+            cookiesToSet.forEach(({ name, value, options }) =>
+              supabaseResponse.cookies.set(name, value, options)
+            )
           },
         },
       }
     )
+
+    // getUser() validates the token with the server and triggers refresh if expired
+    await supabase.auth.getUser()
   }
 
   return supabaseResponse
