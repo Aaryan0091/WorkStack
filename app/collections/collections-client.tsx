@@ -57,7 +57,7 @@ export function CollectionsClient({ collections: initialCollections, bookmarks: 
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
-    const share_slug = formData.name.toLowerCase().replace(/\s+/g, '-') + '-' + Math.random().toString(36).substr(2, 9)
+    const share_slug = formData.name.toLowerCase().replace(/\s+/g, '-') + '-' + Math.random().toString(36).substring(2, 11)
 
     const { data } = await supabase
       .from('collections')

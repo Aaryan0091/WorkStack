@@ -54,7 +54,7 @@ export function SharedCollectionClient({ collection, bookmarks: initialBookmarks
           name: `${collection.name} (Copy)`,
           description: collection.description,
           is_public: false,
-          share_slug: `my-collection-${generateUUID().substr(0, 8)}`,
+          share_slug: `my-collection-${generateUUID().substring(0, 8)}`,
           share_code: Math.random().toString(36).substring(2, 10),
           created_at: new Date().toISOString()
         }
@@ -110,7 +110,7 @@ export function SharedCollectionClient({ collection, bookmarks: initialBookmarks
             name: `${collection.name} (Copy)`,
             description: collection.description,
             is_public: false,
-            share_slug: `my-collection-${generateUUID().substr(0, 8)}`
+            share_slug: `my-collection-${generateUUID().substring(0, 8)}`
           })
           .select()
           .single()

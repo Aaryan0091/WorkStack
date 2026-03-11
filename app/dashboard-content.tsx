@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useMemo, lazy, Suspense } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
+import { getExtensionId, isExtensionInstalledViaContentScript, requestExtensionIdFromContentScript } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,7 @@ import {
   GUEST_KEYS,
   markGuestMode
 } from '@/lib/guest-storage'
+import { generateUUID } from '@/lib/utils'
 
 // Lazy load heavy chart component for faster initial load
 const ChartWithToggle = lazy(() => import('@/components/dashboard/charts').then(m => ({ default: m.ChartWithToggle })))
@@ -131,6 +132,20 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           }
           if (storedCollections) {
             setCollections(storedCollections)
+          } else {
+            // Create default collection for guest
+            const defaultCollection: Collection = {
+              id: generateUUID(),
+              user_id: '',
+              name: 'My Collection (default)',
+              description: 'Your first collection',
+              is_public: false,
+              share_slug: 'my-collection-' + generateUUID().substring(0, 8),
+              share_code: Math.random().toString(36).substring(2, 10),
+              created_at: new Date().toISOString()
+            }
+            guestStoreSet(GUEST_KEYS.COLLECTIONS, [defaultCollection])
+            setCollections([defaultCollection])
           }
         } catch {
           // Error loading guest data
@@ -172,7 +187,29 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     })
 
     if (recentBookmarksRes.data) setBookmarks(recentBookmarksRes.data)
-    if (collectionsRes.data) setCollections(collectionsRes.data)
+
+    // Handle collections - create default collection if none exist
+    let collectionsData = collectionsRes.data || []
+    if (collectionsData.length === 0) {
+      // Create default collection
+      const { data: newCollection } = await supabase
+        .from('collections')
+        .insert({
+          name: 'My Collection (default)',
+          description: 'Your first collection',
+          is_public: false,
+          share_slug: `my-collection-${generateUUID().substring(0, 8)}`,
+          share_code: Math.random().toString(36).substring(2, 10),
+          user_id: user.id,
+        })
+        .select()
+        .single()
+
+      if (newCollection) {
+        collectionsData = [newCollection]
+      }
+    }
+    setCollections(collectionsData)
     } catch (error) {
       console.warn('Error fetching fresh data:', error)
     }
@@ -391,13 +428,13 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     }
   }
 
-  const checkExtensionInstalled = () => {
+  const checkExtensionInstalled = async () => {
     if (typeof window === 'undefined') {
       setExtensionInstalled(false)
       return
     }
 
-    // First check: Content script marker (most reliable - set by content.js)
+    // First check: Content script marker (most reliable - set by content.js injected into page world)
     if (isExtensionInstalledViaContentScript()) {
       setExtensionInstalled(true)
       const extensionId = getExtensionId()
@@ -410,7 +447,19 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       return
     }
 
-    // Second check: Try messaging via chrome.runtime API
+    // Second check: Actively request extension ID from content script via postMessage.
+    // The content script may have announced before our listener was ready (race condition),
+    // so we explicitly ask and wait for a response.
+    const extensionIdFromCS = await requestExtensionIdFromContentScript(1500)
+    if (extensionIdFromCS) {
+      setExtensionInstalled(true)
+      if (checkIntervalRef.current) clearInterval(checkIntervalRef.current)
+      checkExtensionStatus()
+      checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
+      return
+    }
+
+    // Third check: Try messaging via chrome.runtime API
     const chromeWindow = window as typeof window & { chrome?: { runtime?: { sendMessage?: (id: string, msg: Record<string, unknown>, cb?: (r: { success?: boolean; isTracking?: boolean; isPaused?: boolean } | undefined) => void) => void; lastError?: { message?: string } } } }
     if (!chromeWindow.chrome?.runtime) {
       setExtensionInstalled(false)

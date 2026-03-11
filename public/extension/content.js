@@ -10,10 +10,24 @@
       extensionId = chrome.runtime.id
     }
 
-    // Set extension ID on window for detection
+    // Set extension ID on window for detection (isolated world — only this script can see these)
     if (extensionId) {
       window.workStackExtensionId = extensionId
       window.workStackExtensionInstalled = true
+    }
+
+    // Inject markers into the PAGE's main world so React code can read them directly.
+    // Content scripts run in an isolated world — window properties set above are invisible
+    // to the page's JavaScript. This injected script runs in the main world.
+    if (extensionId) {
+      try {
+        var script = document.createElement('script')
+        script.textContent = 'window.workStackExtensionInstalled=true;window.workStackExtensionId="' + extensionId + '";'
+        ;(document.head || document.documentElement).appendChild(script)
+        script.remove()
+      } catch (e) {
+        // CSP may block inline scripts on some pages; postMessage fallback handles this
+      }
     }
 
     // Listen for requests from the page

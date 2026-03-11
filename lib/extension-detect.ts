@@ -65,7 +65,7 @@ export function isExtensionInstalledViaContentScript(): boolean {
  * Request extension ID from content script via postMessage
  * Returns a promise that resolves with the extension ID or null after timeout
  */
-function requestExtensionIdFromContentScript(): Promise<string | null> {
+export function requestExtensionIdFromContentScript(timeoutMs = 2000): Promise<string | null> {
   return new Promise((resolve) => {
     if (typeof window === 'undefined') {
       resolve(null)
@@ -74,7 +74,7 @@ function requestExtensionIdFromContentScript(): Promise<string | null> {
 
     const timeout = setTimeout(() => {
       resolve(null)
-    }, 2000)
+    }, timeoutMs)
 
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'workstack-extension-id-response') {

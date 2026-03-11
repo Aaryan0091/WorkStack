@@ -128,7 +128,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
               name: 'My Collection (default)',
               description: 'Your first collection',
               is_public: false,
-              share_slug: 'my-collection-' + generateUUID().substr(0, 8),
+              share_slug: 'my-collection-' + generateUUID().substring(0, 8),
               share_code: Math.random().toString(36).substring(2, 10),
               created_at: new Date().toISOString()
             }
@@ -207,7 +207,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
             name: 'My Collection (default)',
             description: 'Your first collection',
             is_public: false,
-            share_slug: `my-collection-${generateUUID().substr(0, 8)}`,
+            share_slug: `my-collection-${generateUUID().substring(0, 8)}`,
             share_code: Math.random().toString(36).substring(2, 10),
             user_id: user.id,
           })
@@ -500,7 +500,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
         description: formData.description || null,
         user_id: '',
         is_public: formData.is_public,
-        share_slug: formData.name.toLowerCase().replace(/\s+/g, '-') + '-' + Math.random().toString(36).substr(2, 9),
+        share_slug: formData.name.toLowerCase().replace(/\s+/g, '-') + '-' + Math.random().toString(36).substring(2, 11),
         share_code,
         created_at: new Date().toISOString()
       }
@@ -518,7 +518,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
-    const share_slug = formData.name.toLowerCase().replace(/\s+/g, '-') + '-' + Math.random().toString(36).substr(2, 9)
+    const share_slug = formData.name.toLowerCase().replace(/\s+/g, '-') + '-' + Math.random().toString(36).substring(2, 11)
 
     const { data } = await supabase
       .from('collections')
@@ -674,7 +674,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
         ...collection,
         id: generateUUID(),
         name: `${collection.name} (copy)`,
-        share_slug: `${collection.name.toLowerCase().replace(/\s+/g, '-')}-copy-${Math.random().toString(36).substr(2, 9)}`,
+        share_slug: `${collection.name.toLowerCase().replace(/\s+/g, '-')}-copy-${Math.random().toString(36).substring(2, 11)}`,
         share_code: Math.random().toString(36).substring(2, 10),
         created_at: new Date().toISOString()
       }
@@ -692,7 +692,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     if (!user) return
 
     // Create new collection with copied name
-    const share_slug = `${collection.name.toLowerCase().replace(/\s+/g, '-')}-copy-${Math.random().toString(36).substr(2, 9)}`
+    const share_slug = `${collection.name.toLowerCase().replace(/\s+/g, '-')}-copy-${Math.random().toString(36).substring(2, 11)}`
     const share_code = Math.random().toString(36).substring(2, 10)
 
     const { data: newCollection } = await supabase
