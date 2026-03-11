@@ -30,6 +30,11 @@ export interface ExtensionResponse {
 // Users must set NEXT_PUBLIC_EXTENSION_ID to their published extension ID
 const PRODUCTION_EXTENSION_ID = process.env.NEXT_PUBLIC_EXTENSION_ID || ''
 
+// Common unpacked extension ID pattern for development
+// Chrome generates deterministic IDs for unpacked extensions
+// Pattern: <32-character-hash>
+const KNOWN_DEV_EXTENSION_IDS: string[] = []
+
 let cachedExtensionId: string | null = null
 let extensionInstalledByPostMessage = false
 let hasRequestedExtensionId = false
@@ -178,16 +183,42 @@ export function sendExtensionMessage(message: ExtensionMessage): Promise<Extensi
       return
     }
 
-    // If we have a cached ID from postMessage, use it
-    const extensionId = cachedExtensionId || PRODUCTION_EXTENSION_ID
+    // Build list of possible extension IDs to try
+    const possibleIds = new Set<string>()
 
-    chrome.runtime.sendMessage(extensionId, message, (response: ExtensionResponse) => {
-      if (chrome.runtime?.lastError) {
-        reject(new Error(chrome.runtime.lastError.message || 'Extension error'))
-      } else {
-        resolve(response)
+    // Priority 1: Cached ID from content script
+    if (cachedExtensionId) possibleIds.add(cachedExtensionId)
+
+    // Priority 2: Production extension ID from env
+    if (PRODUCTION_EXTENSION_ID) possibleIds.add(PRODUCTION_EXTENSION_ID)
+
+    // Priority 3: Known dev IDs (for unpacked extensions)
+    KNOWN_DEV_EXTENSION_IDS.forEach(id => possibleIds.add(id))
+
+    // Try each ID until one works
+    const trySend = (ids: string[], index = 0): void => {
+      if (index >= ids.length) {
+        // All IDs failed
+        reject(new Error('Extension not reachable with any known ID'))
+        return
       }
-    })
+
+      const extensionId = ids[index]
+      chrome.runtime.sendMessage(extensionId, message, (response: ExtensionResponse) => {
+        if (chrome.runtime?.lastError) {
+          // Try next ID
+          trySend(ids, index + 1)
+        } else {
+          // This ID worked - cache it
+          if (extensionId && !cachedExtensionId) {
+            cachedExtensionId = extensionId
+          }
+          resolve(response)
+        }
+      })
+    }
+
+    trySend(Array.from(possibleIds), 0)
   })
 }
 

@@ -84,6 +84,11 @@ If you want users to install from Chrome Web Store:
 **Extension not connecting?**
 - Ensure `NEXT_PUBLIC_APP_URL` is set correctly
 - Check that CORS is allowing `chrome-extension://` origins
+- **Important:** After deployment, if your domain changed or if you're using a custom domain, you need to reinstall the extension:
+  1. Load unpacked extension from `public/extension/` folder
+  2. Open `chrome://extensions/` and click "Reload" on the extension
+  3. Visit your deployed site - the extension should now detect the site
+- For Vercel deployments with custom domains, update the `manifest.json` matches or use unpacked extension
 
 **AI features not working?**
 - Verify `GROQ_API_KEY` is set and has available credits
