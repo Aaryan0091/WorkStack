@@ -546,8 +546,8 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       return
     }
 
-    // Re-check extension status when user clicks Track Activity
-    const recheckResult: boolean = await checkExtensionLocal()
+    // Re-check extension status when user clicks Track Activity (fast check)
+    const recheckResult: boolean = await checkExtensionLocal(2, 100)
     if (recheckResult) {
       // Extension is now detected - proceed with tracking
       setShowPermissionModal(true)
@@ -555,21 +555,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     }
 
     // Extension still not detected - show modal
-    if (extensionInstalled === false) {
-      setShowExtensionModal(true)
-      return
-    }
-
-    // Extension might be in false state even though it's installed
-    // Try one more check before showing modal
-    const finalCheck: boolean = await checkExtensionLocal()
-    if (finalCheck) {
-      // Extension detected after re-check - proceed
-      setShowPermissionModal(true)
-      return
-    }
-
-    // Still not detected - show modal
     setShowExtensionModal(true)
   }
 

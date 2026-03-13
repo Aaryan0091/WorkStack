@@ -1,5 +1,5 @@
 // WorkStack Extension Content Script
-// This script runs on workstack pages to enable communication between the page and extension
+// This script runs on workstack pages to enable communication between page and extension
 
 (function() {
   'use strict'
@@ -10,47 +10,16 @@
     extensionId = chrome.runtime.id
   }
 
-  // Set extension ID on window for detection (isolated world — only this script can see these)
-  if (extensionId) {
-    window.workStackExtensionId = extensionId
-    window.workStackExtensionInstalled = true
-  }
+  console.log('[WorkStack Extension] Content script loaded, ID:', extensionId, 'URL:', window.location.href)
 
-  // Inject markers into the PAGE's main world so React code can read them directly.
-  // Content scripts run in an isolated world — window properties set above are invisible
-  // to the page's JavaScript. This injected script runs in the main world.
-  var setMarkers = function() {
-    if (!extensionId) return
-
-    try {
-      var script = document.createElement('script')
-      script.textContent = 'window.workStackExtensionInstalled=true;window.workStackExtensionId="' + extensionId + '";'
-      ;(document.head || document.documentElement).appendChild(script)
-      script.remove()
-      return true
-    } catch (e) {
-      // CSP may block inline scripts on some pages
-      return false
-    }
-  }
-
-  // Try to set markers immediately
-  setMarkers()
-
-  // Keep trying if markers get cleared (some sites clear them periodically)
-  var markerInterval = setInterval(function() {
-    if (!window.workStackExtensionInstalled || !window.workStackExtensionId) {
-      setMarkers()
-    }
-  }, 1000)
-
-  // Listen for requests from the page
+  // Listen for requests from page
   window.addEventListener('message', function(event) {
     // Only accept messages from same origin
     if (event.source !== window) return
 
     if (event.data && event.data.type === 'workstack-request-extension-id') {
-      // Send back the extension ID
+      console.log('[WorkStack Extension] Received extension ID request')
+      // Send back extension ID
       window.postMessage({
         type: 'workstack-extension-id-response',
         extensionId: extensionId
@@ -58,24 +27,23 @@
     }
   })
 
-  // Announce extension presence on page load
+  // Announce extension presence immediately
   function announceExtension() {
+    console.log('[WorkStack Extension] Announcing presence, ID:', extensionId)
     window.postMessage({
       type: 'workstack-extension-installed',
       extensionId: extensionId
     }, '*')
   }
 
-  // Announce immediately and keep announcing
+  // Announce immediately
   announceExtension()
+
+  // Announce repeatedly to handle page transitions and re-renders
+  setInterval(announceExtension, 2000)
 
   // Also announce when DOM is ready (in case we were too early)
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', announceExtension)
   }
-
-  // Clear interval on page unload
-  window.addEventListener('beforeunload', function() {
-    clearInterval(markerInterval)
-  })
 })()

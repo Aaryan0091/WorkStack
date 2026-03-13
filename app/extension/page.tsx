@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { isChromiumBased, getBrowserName } from '@/lib/browser-detect'
-import { isExtensionInstalledViaContentScript, checkExtensionWithTimeout } from '@/lib/extension-detect'
+import { checkExtensionWithTimeout } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
 
 export default function ExtensionPage() {
@@ -54,13 +54,7 @@ export default function ExtensionPage() {
   const opacity = mounted ? Math.max(0.7, 1 - scrollY / 500) : 1
 
   const checkExtensionInstalled = async () => {
-    // First check if content script marker is set (fastest)
-    if (isExtensionInstalledViaContentScript()) {
-      setExtensionInstalled(true)
-      return
-    }
-
-    // Also try sending a ping message to the extension
+    // Check if extension is installed via postMessage (works across isolated worlds)
     const isInstalled = await checkExtensionWithTimeout(2000)
     setExtensionInstalled(isInstalled)
   }

@@ -109,6 +109,7 @@ function setupPostMessageListener(): void {
   window.addEventListener('message', (event) => {
     // Handle extension announcement
     if (event.data?.type === 'workstack-extension-installed' && event.data.extensionId) {
+      console.log('[WorkStack Detection] Extension announced:', event.data.extensionId)
       extensionInstalledByPostMessage = true
       cachedExtensionId = event.data.extensionId as string
     }
@@ -259,20 +260,24 @@ export async function checkExtensionWithTimeout(timeoutMs: number = 3000): Promi
  * Check if the WorkStack extension is installed
  * Uses a longer timeout and retry approach for better reliability
  */
-export async function checkExtensionLocal(retries = 5, delayMs = 600): Promise<boolean> {
+export async function checkExtensionLocal(retries = 3, delayMs = 200): Promise<boolean> {
+  console.log('[WorkStack Detection] Starting extension check, cached ID:', cachedExtensionId)
   for (let i = 0; i < retries; i++) {
     try {
       const response = await sendExtensionMessage({ action: 'ping' })
+      console.log('[WorkStack Detection] Attempt', i + 1, 'response:', response)
       if (response?.success === true) {
+        console.log('[WorkStack Detection] Extension detected successfully!')
         return true
       }
     } catch {
-      // Ignore errors and retry
+      console.log('[WorkStack Detection] Attempt', i + 1, 'error detected, retrying...')
     }
     // Wait before next retry
     if (i < retries - 1) {
       await new Promise(resolve => setTimeout(resolve, delayMs))
     }
   }
+  console.log('[WorkStack Detection] All attempts failed, returning false')
   return false
 }
