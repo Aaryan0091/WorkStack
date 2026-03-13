@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { isChromiumBased, getBrowserName } from '@/lib/browser-detect'
-import { checkExtensionWithTimeout } from '@/lib/extension-detect'
+import { checkExtensionWithTimeout, getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
 
 export default function ExtensionPage() {
@@ -15,11 +15,16 @@ export default function ExtensionPage() {
   const [extensionInstalled, setExtensionInstalled] = useState<boolean | null>(null)
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [scrollY, setScrollY] = useState(0)
+  const [debugInfo, setDebugInfo] = useState<Record<string, string>>({})
+  const [showDebug, setShowDebug] = useState(false)
 
   useEffect(() => {
     setMounted(true)
     setBrowser(getBrowserName())
     setSupported(isChromiumBased())
+
+    // Collect initial debug info
+    updateDebugInfo()
 
     // Check for extension on mount
     checkExtensionInstalled()
@@ -27,8 +32,19 @@ export default function ExtensionPage() {
     // Listen for custom event from content script
     const handleExtensionLoaded = () => {
       setExtensionInstalled(true)
+      updateDebugInfo()
     }
     window.addEventListener('workstack-extension-loaded', handleExtensionLoaded)
+
+    // Listen for extension announcement
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'workstack-extension-installed') {
+        console.log('[Extension Page] Received extension announcement:', event.data.extensionId)
+        updateDebugInfo()
+        setExtensionInstalled(true)
+      }
+    }
+    window.addEventListener('message', handleMessage)
 
     // Re-check when tab becomes visible again (user might have just installed extension)
     const handleVisibilityChange = () => {
@@ -41,12 +57,34 @@ export default function ExtensionPage() {
     const handleScroll = () => setScrollY(window.scrollY)
     window.addEventListener('scroll', handleScroll, { passive: true })
 
+    // Periodically re-check for debug updates
+    const debugInterval = setInterval(() => {
+      if (showDebug) updateDebugInfo()
+    }, 1000)
+
     return () => {
       window.removeEventListener('scroll', handleScroll)
       window.removeEventListener('workstack-extension-loaded', handleExtensionLoaded)
+      window.removeEventListener('message', handleMessage)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
+      clearInterval(debugInterval)
     }
-  }, [])
+  }, [showDebug])
+
+  const updateDebugInfo = () => {
+    const info: Record<string, string> = {
+      'Current URL': window.location.href,
+      'Browser': browser,
+      'Extension Installed (sync)': isExtensionInstalledViaContentScript().toString(),
+      'Extension ID': getExtensionId() || 'None',
+      'Window chrome defined': (typeof window.chrome !== 'undefined').toString(),
+      'Chrome runtime defined': (window.chrome?.runtime !== undefined).toString(),
+      'Chrome runtime sendMessage': (typeof window.chrome?.runtime?.sendMessage === 'function').toString(),
+      'WorkStack installed marker': (window.workStackExtensionInstalled?.toString() || 'undefined'),
+      'WorkStack ID marker': (window.workStackExtensionId?.toString() || 'undefined'),
+    }
+    setDebugInfo(info)
+  }
 
   // Calculate scale based on scroll (1.5 at top, 1 at 100px scroll)
   // Only apply animation after component is mounted to avoid hydration mismatch
@@ -54,8 +92,20 @@ export default function ExtensionPage() {
   const opacity = mounted ? Math.max(0.7, 1 - scrollY / 500) : 1
 
   const checkExtensionInstalled = async () => {
-    // Check if extension is installed via postMessage (works across isolated worlds)
-    const isInstalled = await checkExtensionWithTimeout(2000)
+    console.log('[Extension Page] Checking extension installation...')
+    updateDebugInfo()
+
+    // First check if content script marker is present
+    const syncCheck = isExtensionInstalledViaContentScript()
+    console.log('[Extension Page] Sync check result:', syncCheck)
+
+    // Then check via postMessage (works across isolated worlds)
+    const isInstalled = await checkExtensionWithTimeout(3000)
+    console.log('[Extension Page] Async check result:', isInstalled)
+
+    // Final update after check
+    updateDebugInfo()
+
     setExtensionInstalled(isInstalled)
   }
 
@@ -456,6 +506,46 @@ export default function ExtensionPage() {
             ))}
           </div>
         </div>
+
+        {/* Debug Panel Toggle */}
+        <div className="text-center mt-6 mb-8">
+          <button
+            onClick={() => setShowDebug(!showDebug)}
+            className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+            style={{
+              backgroundColor: 'var(--bg-secondary)',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer'
+            }}
+          >
+            {showDebug ? '🔼 Hide Debug' : '🔽 Show Debug'}
+          </button>
+        </div>
+
+        {/* Debug Panel */}
+        {showDebug && (
+          <div className="rounded-xl shadow-lg p-6 mb-8 border-2" style={{ backgroundColor: '#1a1a2e', borderColor: '#3b82f6' }}>
+            <h2 className="text-xl font-bold mb-4 flex items-center gap-2" style={{ color: '#3b82f6' }}>
+              <span>🐛</span> Debug Information
+            </h2>
+            <p className="text-sm mb-4" style={{ color: '#94a3b8' }}>
+              Use this info to troubleshoot extension detection issues. Open browser Console (F12) for more details.
+            </p>
+            <div className="space-y-2 text-sm font-mono">
+              {Object.entries(debugInfo).map(([key, value]) => (
+                <div key={key} className="flex gap-4 py-2 border-b" style={{ borderColor: '#2d2d4a' }}>
+                  <span className="text-blue-400 min-w-[200px]">{key}:</span>
+                  <span style={{ color: value === 'true' ? '#22c55e' : value === 'false' ? '#ef4444' : '#e2e8f0' }}>{value}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 text-xs" style={{ color: '#64748b' }}>
+              <p className="mb-1"><strong>Extension ID:</strong> Should show a 32-character hash if extension is detected</p>
+              <p className="mb-1"><strong>Content script marker:</strong> Should be 'true' if content script is running</p>
+              <p><strong>Chrome runtime:</strong> Should be 'true' in Chrome/Edge/Brave</p>
+            </div>
+          </div>
+        )}
 
       </div>
 

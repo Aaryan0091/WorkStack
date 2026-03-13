@@ -105,11 +105,18 @@ function setupPostMessageListener(): void {
   if (typeof window === 'undefined' || hasRequestedExtensionId) return
 
   hasRequestedExtensionId = true
+  console.log('[WorkStack Detection] Setting up postMessage listener...')
 
   window.addEventListener('message', (event) => {
     // Handle extension announcement
     if (event.data?.type === 'workstack-extension-installed' && event.data.extensionId) {
       console.log('[WorkStack Detection] Extension announced:', event.data.extensionId)
+      extensionInstalledByPostMessage = true
+      cachedExtensionId = event.data.extensionId as string
+    }
+    // Handle extension ID response
+    if (event.data?.type === 'workstack-extension-id-response' && event.data.extensionId) {
+      console.log('[WorkStack Detection] Extension ID received:', event.data.extensionId)
       extensionInstalledByPostMessage = true
       cachedExtensionId = event.data.extensionId as string
     }
