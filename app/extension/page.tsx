@@ -17,6 +17,7 @@ export default function ExtensionPage() {
   const [scrollY, setScrollY] = useState(0)
   const [debugInfo, setDebugInfo] = useState<Record<string, string>>({})
   const [showDebug, setShowDebug] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setMounted(true)
@@ -111,9 +112,13 @@ export default function ExtensionPage() {
 
   const downloadExtension = async () => {
     setDownloading(true)
+    setError(null)
     try {
       const response = await fetch('/api/extension-download')
-      if (!response.ok) throw new Error('Download failed')
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        throw new Error(`Server error: ${response.status} ${errorText}`)
+      }
 
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
@@ -126,7 +131,7 @@ export default function ExtensionPage() {
       window.URL.revokeObjectURL(url)
     } catch (error) {
       console.error('Download failed:', error)
-      alert('Download failed. Please try again.')
+      setError(error instanceof Error ? error.message : 'Download failed. Please try again.')
     } finally {
       setDownloading(false)
     }
@@ -572,6 +577,49 @@ export default function ExtensionPage() {
             </div>
           </div>
           <style>{`@keyframes slideUp{from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:translateY(0);}}`}</style>
+        </div>
+      )}
+
+      {/* Error Toast */}
+      {error && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50">
+          <div className="flex items-start gap-4 px-5 py-4 rounded-xl" style={{
+            background: 'var(--bg-primary)',
+            boxShadow: '0 10px 40px rgba(239, 68, 68, 0.2)',
+            border: '1px solid #ef4444',
+            maxWidth: '400px'
+          }}>
+            <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0" style={{
+              backgroundColor: '#ef4444'
+            }}>
+              <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-semibold mb-1" style={{ color: '#ef4444' }}>Download Failed</p>
+              <p className="text-xs mb-3" style={{ color: 'var(--text-secondary)', wordBreak: 'break-word' }}>{error}</p>
+              <button
+                onClick={() => setError(null)}
+                className="px-4 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                style={{
+                  backgroundColor: '#ef4444',
+                  color: 'white'
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              className="text-xs flex-shrink-0"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
       )}
     </DashboardLayout>
