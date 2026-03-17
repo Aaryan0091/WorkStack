@@ -170,7 +170,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   // Toast and confirm dialog state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null)
-  const [pendingTabs, setPendingTabs] = useState<{ url: string; title: string }[] | null>(null)
+  const [, setPendingTabs] = useState<{ url: string; title: string }[] | null>(null)
 
   // AI tag suggestions state
   const [aiEnabled, setAiEnabled] = useState(false)

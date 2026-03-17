@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useMemo, lazy, Suspense } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { getExtensionId, isExtensionInstalledViaContentScript, requestExtensionIdFromContentScript, isExtensionInstalled, checkExtensionLocal } from '@/lib/extension-detect'
+import { getExtensionId, isExtensionInstalledViaContentScript, requestExtensionIdFromContentScript, checkExtensionLocal } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -438,82 +438,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     }
   }
 
-  const checkExtensionInitial = async () => {
-    if (typeof window === 'undefined') {
-      setExtensionInstalled(false)
-      return
-    }
-
-    // First check: Content script marker (most reliable - set by content.js injected into page world)
-    if (isExtensionInstalledViaContentScript()) {
-      setExtensionInstalled(true)
-      const extensionId = getExtensionId()
-      if (extensionId) {
-        // Clear any existing interval before starting a new one
-        if (checkIntervalRef.current) clearInterval(checkIntervalRef.current)
-        checkExtensionStatus()
-        checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
-      }
-      return
-    }
-
-    // Second check: Actively request extension ID from content script via postMessage.
-    // The content script may have announced before our listener was ready (race condition),
-    // so we explicitly ask and wait for a response.
-    const extensionIdFromCS: string | null = await requestExtensionIdFromContentScript(3000)
-    if (extensionIdFromCS) {
-      setExtensionInstalled(true)
-      if (checkIntervalRef.current) clearInterval(checkIntervalRef.current)
-      checkExtensionStatus()
-      checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
-      return
-    }
-
-    // Third check: Try messaging via chrome.runtime API
-    const chromeWindow = window as typeof window & { chrome?: { runtime?: { sendMessage?: (id: string, msg: Record<string, unknown>, cb?: (r: { success?: boolean; isTracking?: boolean; isPaused?: boolean } | undefined) => void) => void; lastError?: { message?: string } } } }
-    if (!chromeWindow.chrome?.runtime) {
-      setExtensionInstalled(false)
-      return
-    }
-
-    const chrome = chromeWindow.chrome
-
-    // Try to get extension ID - this now uses known IDs as fallback
-    const extensionId = getExtensionId()
-
-    // If we don't have an extension ID at this point, we can't send a message
-    if (!extensionId) {
-      setExtensionInstalled(false)
-      return
-    }
-
-    // Verify the extension actually responds
-    let responded = false
-    extensionCheckTimeoutRef.current = setTimeout(() => {
-      if (!responded) {
-        responded = true
-        setExtensionInstalled(false)
-      }
-    }, 1000)
-
-    chrome.runtime?.sendMessage?.(extensionId, { action: 'ping' }, (response: { success?: boolean; isTracking?: boolean; isPaused?: boolean; savedSession?: boolean } | undefined) => {
-      if (responded) return
-      responded = true
-      if (extensionCheckTimeoutRef.current) clearTimeout(extensionCheckTimeoutRef.current)
-
-      if (chrome.runtime?.lastError) {
-        setExtensionInstalled(false)
-      } else if (response?.success) {
-        setExtensionInstalled(true)
-        // Clear any existing interval before starting a new one
-        if (checkIntervalRef.current) clearInterval(checkIntervalRef.current)
-        checkExtensionStatus()
-        checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
-      } else {
-        setExtensionInstalled(false)
-      }
-    })
-  }
 
   const checkExtensionStatus = () => {
     const chrome = (window as typeof window & { chrome?: { runtime?: { sendMessage?: (id: string, msg: Record<string, unknown>, cb?: (r: { success?: boolean; isTracking?: boolean; isPaused?: boolean; savedSession?: boolean; sessionTabs?: unknown[] } | undefined) => void) => void; lastError?: { message?: string } } } }).chrome
@@ -1186,7 +1110,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           </div>
           <div className="p-4 rounded-lg" style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)' }}>
             <p className="text-sm" style={{ color: '#1e40af' }}>
-              <strong>Note:</strong> Make sure you've installed the WorkStack extension in your browser before starting tracking.
+              <strong>Note:</strong> Make sure you&apos;ve installed the WorkStack extension in your browser before starting tracking.
             </p>
           </div>
           <div className="flex gap-3">

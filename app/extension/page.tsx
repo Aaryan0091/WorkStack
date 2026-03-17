@@ -301,7 +301,7 @@ export default function ExtensionPage() {
                     Find <code className="bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">workstack-extension.zip</code> in your Downloads folder and extract it.
                   </p>
                   <p className="text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>
-                    💡 Right-click ZIP file → "Extract All" (Windows) or double-click to extract (Mac)
+                    💡 Right-click ZIP file → &quot;Extract All&quot; (Windows) or double-click to extract (Mac)
                   </p>
                   <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                     📁 You will get a <code className="bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">workstack-extension</code> folder - remember its location!
@@ -358,7 +358,7 @@ export default function ExtensionPage() {
                     Enable Developer Mode
                   </h3>
                   <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
-                    Look for "Developer mode" toggle in the top-right corner and turn it on.
+                    Look for &quot;Developer mode&quot; toggle in the top-right corner and turn it on.
                   </p>
                   <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                     💡 This allows you to load unpacked extensions from your computer
@@ -376,7 +376,7 @@ export default function ExtensionPage() {
                     Load Extension
                   </h3>
                   <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
-                    Click "Load unpacked" and select the extracted extension folder.
+                    Click &quot;Load unpacked&quot; and select the extracted extension folder.
                   </p>
                   <div className="p-4 rounded-lg border-2 border-dashed flex items-center justify-center gap-3" style={{ borderColor: 'var(--border-color)' }}>
                     <svg className="w-8 h-8" style={{ color: 'var(--text-secondary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -408,7 +408,7 @@ export default function ExtensionPage() {
                 <li><strong>Reload extension:</strong> Go to brave://extensions/ or chrome://extensions/ and click the refresh icon on the WorkStack extension card</li>
                 <li><strong>Refresh page:</strong> After reloading the extension, refresh your WorkStack tab</li>
                 <li><strong>Check URL:</strong> Make sure you are visiting https://workstack.vercel.app (not with www)</li>
-                <li><strong>Disable Brave Shields:</strong> Click the Brave Shields icon and set it to "Do not block anything" for the WorkStack site</li>
+                <li><strong>Disable Brave Shields:</strong> Click the Brave Shields icon and set it to &quot;Do not block anything&quot; for the WorkStack site</li>
               </ol>
             </div>
 
@@ -546,8 +546,8 @@ export default function ExtensionPage() {
             </div>
             <div className="mt-4 text-xs" style={{ color: '#64748b' }}>
               <p className="mb-1"><strong>Extension ID:</strong> Should show a 32-character hash if extension is detected</p>
-              <p className="mb-1"><strong>Content script marker:</strong> Should be 'true' if content script is running</p>
-              <p><strong>Chrome runtime:</strong> Should be 'true' in Chrome/Edge/Brave</p>
+              <p className="mb-1"><strong>Content script marker:</strong> Should be &apos;true&apos; if content script is running</p>
+              <p><strong>Chrome runtime:</strong> Should be &apos;true&apos; in Chrome/Edge/Brave</p>
             </div>
           </div>
         )}
