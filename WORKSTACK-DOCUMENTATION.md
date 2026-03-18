@@ -24,14 +24,6 @@ Use this page hierarchy for maximum efficiency:
 └── 📋 Changelog / Decisions Log
 ```
 
-**Notion Tips:**
-- Create each section as a **sub-page** (not a heading inside one giant page)
-- Use **Notion databases** for API routes and DB schema (table view = instant reference)
-- Use **toggles** for code blocks to keep pages scannable
-- Tag pages with `frontend`, `backend`, `extension`, `database` for filtering
-
----
-
 ## 🏠 Overview & Architecture
 
 ### Tech Stack
