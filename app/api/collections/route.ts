@@ -67,7 +67,7 @@ export async function GET(request: NextRequest) {
       .eq('user_id', user.id)
       .ilike('name', 'My Collection (default)')
       .limit(1)
-      .single()
+      .maybeSingle()
 
     if (existing) {
       const response = NextResponse.json({ collection: existing })
@@ -81,10 +81,11 @@ export async function GET(request: NextRequest) {
       return corsHeaders(response, request)
     }
 
-    // Create default collection
+    // Create default collection using RPC to handle race condition atomically
     const share_slug = 'default-' + Math.random().toString(36).substr(2, 9)
     const share_code = Math.random().toString(36).substring(2, 10)
 
+    // Try to create, if duplicate error occurs, fetch the existing one
     const { data, error } = await supabase
       .from('collections')
       .insert({
@@ -99,6 +100,22 @@ export async function GET(request: NextRequest) {
       .single()
 
     if (error) {
+      // Check if it's a duplicate constraint error (23505)
+      if (error.code === '23505' || error.message?.toLowerCase().includes('duplicate')) {
+        // Collection was created by another request, fetch it
+        const { data: refetched } = await supabase
+          .from('collections')
+          .select('*')
+          .eq('user_id', user.id)
+          .ilike('name', 'My Collection (default)')
+          .limit(1)
+          .single()
+
+        if (refetched) {
+          const response = NextResponse.json({ collection: refetched })
+          return corsHeaders(response, request)
+        }
+      }
       const response = NextResponse.json({ error: error.message }, { status: 500 })
       return corsHeaders(response, request)
     }

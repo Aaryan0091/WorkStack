@@ -17,12 +17,13 @@ interface Props {
   bookmarkTags: Record<string, Tag[]>
 }
 
-export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTags }: Props) {
+export function BookmarksClient({ bookmarks: initialBookmarks, tags: initialTags, bookmarkTags }: Props) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [, startTransition] = useTransition()
 
   const [bookmarks, setBookmarks] = useState(initialBookmarks)
+  const [tags, setTags] = useState(initialTags)
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editingBookmark, setEditingBookmark] = useState<Bookmark | null>(null)
@@ -38,6 +39,7 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTag
   })
   const [tagInput, setTagInput] = useState('')
   const [formError, setFormError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const processedUrlParams = useRef(false)
   const urlParamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [tagContextMenu, setTagContextMenu] = useState<{ x: number; y: number; tagId: string } | null>(null)
@@ -96,50 +98,68 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTag
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setFormError('')
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
 
-    const bookmarkData = {
-      url: formData.url,
-      title: formData.title || new URL(formData.url).hostname,
-      description: formData.description || null,
-      notes: formData.notes || null,
-      folder_id: formData.folder_id || null,
+    // Prevent multiple submissions
+    if (isSubmitting) {
+      return
     }
 
-    if (editingBookmark) {
-      const { data } = await supabase.from('bookmarks').update(bookmarkData).eq('id', editingBookmark.id).select()
-      if (data) {
-        setBookmarks(bookmarks.map(b => b.id === editingBookmark.id ? { ...b, ...data[0] } : b))
-      }
-      await supabase.from('bookmark_tags').delete().eq('bookmark_id', editingBookmark.id)
-      for (const tagId of formData.tag_ids) {
-        await supabase.from('bookmark_tags').insert({ bookmark_id: editingBookmark.id, tag_id: tagId })
-      }
-      closeModal()
-    } else {
-      // Check if URL already exists
-      const { data: existingBookmark } = await supabase
-        .from('bookmarks')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq('url', formData.url)
-        .single()
+    setIsSubmitting(true)
 
-      if (existingBookmark) {
-        setFormError('This URL is already bookmarked')
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        setFormError('You must be logged in to save bookmarks')
         return
       }
 
-      const { data } = await supabase.from('bookmarks').insert({ ...bookmarkData, user_id: user.id }).select()
-      if (data && data[0]) {
-        setBookmarks([data[0], ...bookmarks])
-        // Add tags to bookmark
-        for (const tagId of formData.tag_ids) {
-          await supabase.from('bookmark_tags').insert({ bookmark_id: data[0].id, tag_id: tagId })
-        }
+      const bookmarkData = {
+        url: formData.url,
+        title: formData.title || new URL(formData.url).hostname,
+        description: formData.description || null,
+        notes: formData.notes || null,
+        folder_id: formData.folder_id || null,
       }
-      closeModal()
+
+      if (editingBookmark) {
+        const { data } = await supabase.from('bookmarks').update(bookmarkData).eq('id', editingBookmark.id).select()
+        if (data) {
+          setBookmarks(bookmarks.map(b => b.id === editingBookmark.id ? { ...b, ...data[0] } : b))
+        }
+        await supabase.from('bookmark_tags').delete().eq('bookmark_id', editingBookmark.id)
+        for (const tagId of formData.tag_ids) {
+          await supabase.from('bookmark_tags').insert({ bookmark_id: editingBookmark.id, tag_id: tagId })
+        }
+        closeModal()
+      } else {
+        // Check if URL already exists
+        const { data: existingBookmark } = await supabase
+          .from('bookmarks')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('url', formData.url)
+          .single()
+
+        if (existingBookmark) {
+          setFormError('This URL is already bookmarked')
+          return
+        }
+
+        const { data } = await supabase.from('bookmarks').insert({ ...bookmarkData, user_id: user.id }).select()
+        if (data && data[0]) {
+          setBookmarks([data[0], ...bookmarks])
+          // Add tags to bookmark
+          for (const tagId of formData.tag_ids) {
+            await supabase.from('bookmark_tags').insert({ bookmark_id: data[0].id, tag_id: tagId })
+          }
+        }
+        closeModal()
+      }
+    } catch (error) {
+      console.error('Error saving bookmark:', error)
+      setFormError('Failed to save bookmark. Please try again.')
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
@@ -190,8 +210,9 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTag
     if (!user) return
 
     const { data } = await supabase.from('tags').insert({ name: tagInput.trim(), user_id: user.id }).select()
-    if (data) {
-      tags.push(data[0])
+    if (data && data[0]) {
+      // Use setTags to update state properly instead of mutating
+      setTags([...tags, data[0]])
       setFormData({ ...formData, tag_ids: [...formData.tag_ids, data[0].id] })
       setTagInput('')
       setTagAdded(true)
@@ -204,10 +225,8 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTag
     if (!user) return
 
     await supabase.from('tags').delete().eq('id', tagId).eq('user_id', user.id)
-    const index = tags.findIndex(t => t.id === tagId)
-    if (index > -1) {
-      tags.splice(index, 1)
-    }
+    // Use setTags to update state properly instead of mutating
+    setTags(tags.filter(t => t.id !== tagId))
     setFormData({ ...formData, tag_ids: formData.tag_ids.filter(id => id !== tagId) })
     setTagContextMenu(null)
   }
@@ -431,8 +450,22 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags, bookmarkTag
             <p className="text-red-500 text-sm">{formError}</p>
           )}
           <div className="flex gap-3 pt-2">
-            <Button type="button" variant="secondary" onClick={closeModal} className="flex-1">Cancel</Button>
-            <Button type="submit" className="flex-1">{editingBookmark ? 'Update' : 'Add'} Bookmark</Button>
+            <Button type="button" variant="secondary" onClick={closeModal} disabled={isSubmitting} className="flex-1">
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isSubmitting} className="flex-1">
+              {isSubmitting ? (
+                <span className="flex items-center gap-2">
+                  <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12c0 2.778-.607 5.319-1.708 7.291l-2.514-2.514a6.972 6.972 0 00-3.055 2.759 4.016 4.016 0 00-5.936-1.557 5.936 5.936 0 00-2.759-3.055l2.514-2.514z"></path>
+                  </svg>
+                  {editingBookmark ? 'Updating...' : 'Saving...'}
+                </span>
+              ) : (
+                `${editingBookmark ? 'Update' : 'Add'} Bookmark`
+              )}
+            </Button>
           </div>
         </form>
       </Modal>

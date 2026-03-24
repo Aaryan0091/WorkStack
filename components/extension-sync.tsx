@@ -16,46 +16,58 @@ export function ExtensionSync() {
     const chrome = (window as typeof window & { chrome?: { runtime?: { sendMessage?: (id: string, msg: Record<string, unknown>, cb: (r: { success?: boolean } | undefined) => void) => void; lastError?: { message?: string } } } }).chrome
     if (!chrome?.runtime) return
 
-    // Function to sync auth token to extension
+    // Function to sync auth token to extension with improved timeout handling
     const syncToken = async () => {
       try {
         const { data: { session }, error: sessionError } = await supabase.auth.getSession()
 
         if (sessionError) {
-          console.warn('Extension sync: Session error:', sessionError.message)
+          console.warn('[Extension Sync] Session error:', sessionError.message)
           return
         }
 
         if (!session?.access_token) {
-          if (isDev) console.log('Extension sync: No active session')
+          if (isDev) console.log('[Extension Sync] No active session')
           return
         }
 
-        let responded = false
-        const timeout = setTimeout(() => {
-          if (!responded) {
-            responded = true
-            if (isDev) console.log('Extension sync: No response (extension may not be installed)')
-          }
-        }, 1000)
+        // Use a more reliable timeout pattern
+        const TIMEOUT_MS = 2000
+        let timeoutId: NodeJS.Timeout | null = null
+        let responseReceived = false
 
+        // Set timeout
+        timeoutId = setTimeout(() => {
+          if (!responseReceived && isDev) {
+            console.log('[Extension Sync] No response (extension may not be installed)')
+          }
+        }, TIMEOUT_MS)
+
+        // Send message to extension
         chrome.runtime?.sendMessage?.(getExtensionId() || '', {
           action: 'storeAuthToken',
           authToken: session.access_token,
           apiBaseUrl: window.location.origin
         }, (response: { success?: boolean } | undefined) => {
-          if (responded) return
-          responded = true
-          clearTimeout(timeout)
+          // Clear timeout if we got a response
+          if (timeoutId) {
+            clearTimeout(timeoutId)
+            timeoutId = null
+          }
+
+          responseReceived = true
 
           if (chrome.runtime?.lastError) {
-            if (isDev) console.log('Extension sync: Extension not reachable')
+            const errorMsg = chrome.runtime.lastError.message || 'Unknown error'
+            console.error('[Extension Sync] Failed to communicate with extension:', errorMsg)
           } else if (response?.success) {
-            if (isDev) console.log('Extension sync: Auth token synced successfully')
+            if (isDev) console.log('[Extension Sync] Auth token synced successfully')
+          } else {
+            console.warn('[Extension Sync] Extension responded but success is not true')
           }
         })
       } catch (error) {
-        console.error('Extension sync error:', error)
+        console.error('[Extension Sync] Unexpected error:', error)
       }
     }
 
@@ -67,19 +79,37 @@ export function ExtensionSync() {
 
     // Listen for auth state changes and sync token
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: { access_token?: string } | null) => {
-      if (isDev) console.log('Auth state changed:', event)
+      if (isDev) console.log('[Extension Sync] Auth state changed:', event)
 
       if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN' || event === 'USER_UPDATED') {
         if (session?.access_token) {
+          const TIMEOUT_MS = 2000
+          let timeoutId: NodeJS.Timeout | null = null
+          let responseReceived = false
+
+          timeoutId = setTimeout(() => {
+            if (!responseReceived && isDev) {
+              console.log('[Extension Sync] No response after auth change')
+            }
+          }, TIMEOUT_MS)
+
           chrome.runtime?.sendMessage?.(getExtensionId() || '', {
             action: 'storeAuthToken',
             authToken: session.access_token,
             apiBaseUrl: window.location.origin
-          }, () => {
+          }, (response: { success?: boolean } | undefined) => {
+            if (timeoutId) {
+              clearTimeout(timeoutId)
+              timeoutId = null
+            }
+
+            responseReceived = true
+
             if (chrome.runtime?.lastError) {
-              if (isDev) console.log('Extension sync: Failed to sync token after auth change')
+              const errorMsg = chrome.runtime.lastError.message || 'Unknown error'
+              console.error('[Extension Sync] Failed to sync token after auth change:', errorMsg)
             } else {
-              if (isDev) console.log('Extension sync: Token synced after', event)
+              if (isDev) console.log('[Extension Sync] Token synced after', event)
             }
           })
         }

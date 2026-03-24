@@ -295,56 +295,105 @@ export async function applyAiTagsToBookmark(
 ): Promise<TagSuggestion[]> {
   const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-  // 1. Generate AI tags
-  const aiTags = await generateAItags(title, url, description)
-  if (aiTags.length === 0) return []
+  try {
+    // 1. Generate AI tags
+    const aiTags = await generateAItags(title, url, description)
+    if (aiTags.length === 0) return []
 
-  // 2. Fetch user's existing tags
-  const { data: existingTags } = await supabase
-    .from('tags')
-    .select('id, name, color')
-    .eq('user_id', userId)
-
-  // 3. Perform fuzzy matching
-  const { matched, newTags } = fuzzyMatchTags(aiTags, existingTags || [])
-
-  // 4. Create new tags
-  const createdTags: Tag[] = []
-  for (const tagName of newTags) {
-    const { data } = await supabase
+    // 2. Fetch user's existing tags
+    const { data: existingTags, error: fetchTagsError } = await supabase
       .from('tags')
-      .insert({ name: tagName, user_id: userId, color: getRandomColor() })
-      .select()
-      .single()
+      .select('id, name, color')
+      .eq('user_id', userId)
 
-    if (data) createdTags.push(data)
-  }
+    if (fetchTagsError) {
+      console.error('[AI Tags] Failed to fetch existing tags:', fetchTagsError)
+      return [] // Return early if we can't fetch existing tags
+    }
 
-  // 5. Get all tag IDs to associate
-  const tagIds = [
-    ...matched.map((m) => m.existingTag.id),
-    ...createdTags.map((t) => t.id),
-  ]
+    // 3. Perform fuzzy matching
+    const { matched, newTags } = fuzzyMatchTags(aiTags, existingTags || [])
 
-  // 6. Associate tags with bookmark
-  for (const tagId of tagIds) {
-    await supabase.from('bookmark_tags').insert({ bookmark_id: bookmarkId, tag_id: tagId })
-  }
+    // 4. Create new tags with error handling
+    const createdTags: Tag[] = []
+    for (const tagName of newTags) {
+      try {
+        const { data, error: createTagError } = await supabase
+          .from('tags')
+          .insert({ name: tagName, user_id: userId, color: getRandomColor() })
+          .select()
+          .single()
 
-  // 7. Return suggestions for UI
-  const suggested: TagSuggestion[] = [
-    ...matched.map((m) => {
-      const existingTag = existingTags?.find((t) => t.id === m.existingTag.id)
-      if (!existingTag) {
-        // Should not happen since matched is derived from existingTags
-        return { id: m.existingTag.id, name: m.existingTag.name, color: '#6b7280', user_id: '', created_at: '', isNew: false }
+        if (createTagError) {
+          // Check for duplicate error - tag might have been created by another request
+          if (createTagError.code === '23505' || createTagError.message?.toLowerCase().includes('duplicate')) {
+            // Try to fetch the existing tag
+            const { data: existingTag } = await supabase
+              .from('tags')
+              .select('*')
+              .eq('name', tagName)
+              .eq('user_id', userId)
+              .single()
+
+            if (existingTag) {
+              createdTags.push(existingTag)
+            }
+          } else {
+            console.error('[AI Tags] Failed to create tag:', tagName, createTagError)
+            // Continue with other tags
+          }
+        } else if (data) {
+          createdTags.push(data)
+        }
+      } catch (error) {
+        console.error('[AI Tags] Exception creating tag:', tagName, error)
+        // Continue with other tags
       }
-      return { ...existingTag, isNew: false }
-    }),
-    ...createdTags.map((t) => ({ ...t, isNew: true })),
-  ]
+    }
 
-  return suggested
+    // 5. Get all tag IDs to associate
+    const tagIds = [
+      ...matched.map((m) => m.existingTag.id),
+      ...createdTags.map((t) => t.id),
+    ]
+
+    // 6. Associate tags with bookmark with error handling
+    for (const tagId of tagIds) {
+      try {
+        const { error: associateError } = await supabase
+          .from('bookmark_tags')
+          .insert({ bookmark_id: bookmarkId, tag_id: tagId })
+
+        if (associateError) {
+          // Check for duplicate - tag might already be associated
+          if (associateError.code !== '23505') {
+            console.error('[AI Tags] Failed to associate tag:', tagId, associateError)
+          }
+        }
+      } catch (error) {
+        console.error('[AI Tags] Exception associating tag:', tagId, error)
+      }
+    }
+
+    // 7. Return suggestions for UI
+    const suggested: TagSuggestion[] = [
+      ...matched.map((m) => {
+        const existingTag = existingTags?.find((t) => t.id === m.existingTag.id)
+        if (!existingTag) {
+          // Should not happen since matched is derived from existingTags
+          return { id: m.existingTag.id, name: m.existingTag.name, color: '#6b7280', user_id: '', created_at: '', isNew: false }
+        }
+        return { ...existingTag, isNew: false }
+      }),
+      ...createdTags.map((t) => ({ ...t, isNew: true })),
+    ]
+
+    return suggested
+  } catch (error) {
+    console.error('[AI Tags] Fatal error in applyAiTagsToBookmark:', error)
+    // Return empty array to not break the flow
+    return []
+  }
 }
 
 // Semantic search expansion using Groq with improved error handling

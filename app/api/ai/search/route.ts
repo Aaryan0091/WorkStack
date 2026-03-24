@@ -95,8 +95,20 @@ export async function POST(request: NextRequest) {
       return corsHeaders(response, request)
     }
 
-    // Score bookmarks based on mode
-    const scoredBookmarks = await Promise.all(
+    // Expand search query once (outside the map) to avoid calling AI multiple times
+    let expandedTerms: string[] = [query]
+    if (GROQ_API_KEY && (mode === 'semantic' || mode === 'all')) {
+      try {
+        expandedTerms = await expandSearchQuery(query)
+      } catch (expandError) {
+        // If expansion fails, fall back to original query
+        console.warn('[Search] Query expansion failed, using original query:', expandError)
+        expandedTerms = [query]
+      }
+    }
+
+    // Score bookmarks based on mode using Promise.allSettled for error handling
+    const scoredResults = await Promise.allSettled(
       (bookmarks || []).map(async (bookmark: Bookmark): Promise<ScoredBookmark> => {
         let score = 0
         const titleLower = (bookmark.title || '').toLowerCase()
@@ -129,16 +141,14 @@ export async function POST(request: NextRequest) {
             break
 
           case 'semantic':
-            // Use AI to expand query and match
-            if (GROQ_API_KEY) {
-              const expandedTerms = await expandSearchQuery(query)
-
+            // Use expanded query to match
+            if (expandedTerms.length > 0) {
               // Direct query matches
               if (titleLower.includes(searchLower)) score += 10
               if (descLower.includes(searchLower)) score += 5
               if (urlLower.includes(searchLower)) score += 3
 
-              // Expanded term matches
+              // Expanded term matches (using the pre-expanded terms)
               for (const term of expandedTerms.slice(1)) {
                 const termLower = term.toLowerCase()
                 if (titleLower.includes(termLower)) score += 4
@@ -174,9 +184,8 @@ export async function POST(request: NextRequest) {
               if (searchLower.includes(tagLower)) score += 6
             }
 
-            // Semantic expansion if AI is available
-            if (GROQ_API_KEY) {
-              const expandedTerms = await expandSearchQuery(query)
+            // Semantic expansion if AI is available (using pre-expanded terms)
+            if (expandedTerms.length > 0) {
               for (const term of expandedTerms.slice(1)) {
                 const termLower = term.toLowerCase()
                 if (titleLower.includes(termLower)) score += 3
@@ -190,6 +199,18 @@ export async function POST(request: NextRequest) {
         return { ...bookmark, _score: score }
       })
     )
+
+    // Extract successful results, log failed ones
+    const scoredBookmarks: ScoredBookmark[] = []
+    scoredResults.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        scoredBookmarks.push(result.value)
+      } else {
+        console.error('[Search] Failed to score bookmark:', index, result.reason)
+        // Include failed bookmarks with score 0 to not lose them entirely
+        scoredBookmarks.push({ ...bookmarks![index], _score: 0 })
+      }
+    })
 
     // Filter out zero-score results and sort by score
     const results = scoredBookmarks

@@ -114,6 +114,21 @@ export const POST = withApiHandler(async (request: NextRequest) => {
     throw new ApiError('Failed to create bookmark', 500, 'INTERNAL_ERROR')
   }
 
+  // If collection_id is provided, add to collection via junction table
+  // This is done before AI tagging to ensure consistency
+  if (collection_id && data?.id) {
+    const { error: collectionError } = await supabase
+      .from('collection_bookmarks')
+      .insert({ collection_id, bookmark_id: data.id })
+
+    if (collectionError) {
+      // Log the error but don't fail the entire request
+      // The bookmark is created, just not added to collection
+      console.error('Failed to add bookmark to collection:', collectionError)
+      // Continue with the response - bookmark was created successfully
+    }
+  }
+
   // Trigger AI auto-tagging in background (fire and forget)
   if (GROQ_API_KEY && data?.id) {
     // Auto-detect base URL from request (works in both dev and production)
@@ -127,24 +142,10 @@ export const POST = withApiHandler(async (request: NextRequest) => {
       },
       body: JSON.stringify({ bookmark_id: data.id }),
     }).catch((err) => {
-      // Silently fail for background task
-      if (process.env.NODE_ENV === 'development') {
-        console.error('Background auto-tag failed:', err)
-      }
+      // Log errors for monitoring in production
+      console.error('[Background Auto-Tag] Failed:', err)
+      // Don't fail the request - bookmark was created successfully
     })
-  }
-
-  // If collection_id is provided, add to collection via junction table
-  if (collection_id && data?.id) {
-    try {
-      await supabase
-        .from('collection_bookmarks')
-        .insert({ collection_id, bookmark_id: data.id })
-    } catch (err) {
-      if (process.env.NODE_ENV === 'development') {
-        console.error('Failed to add to collection:', err)
-      }
-    }
   }
 
   return corsHeaders(apiSuccess({ bookmark: data }, 'Bookmark created successfully', 201), request)

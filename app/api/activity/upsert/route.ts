@@ -67,8 +67,27 @@ export async function POST(request: NextRequest) {
     const titleToUse = (title && title.trim().length > 0) ? title.trim() : url
 
     if (existingEntry) {
-      // Entry exists - UPDATE it (add time, update title if provided)
-      const newTotalTime = (existingEntry.duration_seconds || 0) + duration_seconds
+      // Entry exists - UPDATE it atomically
+      // Try to use RPC for atomic increment, fall back to client-side calculation
+      let newTotalTime = (existingEntry.duration_seconds || 0) + duration_seconds
+
+      try {
+        // Attempt atomic increment via RPC
+        const { data: rpcResult, error: rpcError } = await supabase.rpc(
+          'increment_tab_duration',
+          {
+            p_id: existingEntry.id,
+            p_increment: duration_seconds
+          }
+        )
+
+        if (!rpcError && rpcResult !== null) {
+          newTotalTime = rpcResult
+        }
+      } catch (rpcError) {
+        // RPC may not exist, use client-side calculation
+        console.warn('[Upsert API] RPC not available, using client-side calculation - may have race conditions')
+      }
 
       const { error: updateError } = await supabase
         .from('tab_activity')
