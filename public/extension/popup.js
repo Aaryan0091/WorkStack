@@ -391,7 +391,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           const bookmarkData = {
             url: tabUrl,
             title: title,
-            description: null,
+            description: title, // Use title as description for AI tagging
             notes: null,
             folder_id: null
           }

@@ -114,13 +114,21 @@ export default function ExtensionPage() {
     setDownloading(true)
     setError(null)
     try {
-      // Direct download from static file
+      const response = await fetch('/api/extension-download')
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        throw new Error(`Server error: ${response.status} ${errorText}`)
+      }
+
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
-      a.href = '/extension/workstack-extension.zip'
+      a.href = url
       a.download = 'workstack-extension.zip'
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
     } catch (error) {
       console.error('Download failed:', error)
       setError(error instanceof Error ? error.message : 'Download failed. Please try again.')
