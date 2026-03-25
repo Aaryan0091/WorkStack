@@ -21,7 +21,7 @@ import { generateUUID } from '@/lib/utils'
 const collectionsCache = {
   data: null as { collections: Collection[]; collectionBookmarks: Record<string, Bookmark[]> } | null,
   timestamp: 0,
-  CACHE_TTL: 5000 // 5 seconds - reduced for fresher data
+  CACHE_TTL: 10000 // 10 seconds - increased to reduce unnecessary refetches
 }
 
 interface CollectionsContentProps {
@@ -80,7 +80,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   const [importLoading, setImportLoading] = useState(false)
 
   // Add collection by code modal state
-  const [addCollectionByCodeModalOpen, setAddCollectionByCodeModalOpen] = useState(false)
+  const [modalTab, setModalTab] = useState<'create' | 'add'>('create')
   const [collectionCode, setCollectionCode] = useState('')
   const [addCollectionLoading, setAddCollectionLoading] = useState(false)
 
@@ -152,24 +152,26 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
         return
       }
 
-      // Fetch collections the user owns
-      const { data: ownedCollections } = await supabase
-        .from('collections')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
+      // Fetch all collection data in parallel (3 queries -> 1 batch)
+      const [ownedCollectionsResult, sharedCollectionsResult, removedCollectionsResult] = await Promise.all([
+        supabase
+          .from('collections')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('shared_collections')
+          .select('collection_id, role, collections(*)')
+          .eq('user_id', user.id),
+        supabase
+          .from('removed_collections')
+          .select('collection_id')
+          .eq('user_id', user.id)
+      ])
 
-      // Fetch collections shared with the user
-      const { data: sharedCollectionsData } = await supabase
-        .from('shared_collections')
-        .select('collection_id, role, collections(*)')
-        .eq('user_id', user.id)
-
-      // Fetch collections the user has removed (to filter them out)
-      const { data: removedCollectionsData } = await supabase
-        .from('removed_collections')
-        .select('collection_id')
-        .eq('user_id', user.id)
+      const ownedCollections = ownedCollectionsResult.data
+      const sharedCollectionsData = sharedCollectionsResult.data
+      const removedCollectionsData = removedCollectionsResult.data
 
       // Store removed collection IDs
       const removedIds = new Set<string>(removedCollectionsData?.map((rc: { collection_id: string }) => rc.collection_id) || [])
@@ -248,24 +250,36 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       // Then fetch only first 3 bookmarks per collection for preview (in parallel)
       // Use junction table for many-to-many relationship, also check direct collection_id for backwards compatibility
       const bookmarkPromises = uniqueCollections.map(async (collection: Collection) => {
-        // Fetch from junction table
-        const { data: junctionData } = await supabase
-          .from('collection_bookmarks')
-          .select('bookmark_id, bookmarks(*), added_by')
-          .eq('collection_id', collection.id)
-          .limit(10)
+        // Run all queries for this collection in parallel
+        const [junctionResult, directBookmarksResult, removedBookmarksResult] = await Promise.all([
+          supabase
+            .from('collection_bookmarks')
+            .select('bookmark_id, bookmarks(*), added_by')
+            .eq('collection_id', collection.id)
+            .limit(10),
+          supabase
+            .from('bookmarks')
+            .select('*')
+            .eq('collection_id', collection.id)
+            .limit(3),
+          // Only fetch removed bookmarks if not the owner
+          collection.user_id !== user.id
+            ? supabase
+                .from('removed_collection_bookmarks')
+                .select('bookmark_id')
+                .eq('collection_id', collection.id)
+                .eq('user_id', user.id)
+            : Promise.resolve({ data: null })
+        ])
+
+        const junctionData = junctionResult.data
+        const directBookmarks = directBookmarksResult.data
+        const removedBookmarks = removedBookmarksResult?.data
 
         let bookmarks = junctionData?.flatMap((jb: { bookmarks: Bookmark | Bookmark[] | null; added_by: string }) => {
           const bookmark = Array.isArray(jb.bookmarks) ? jb.bookmarks[0] : jb.bookmarks
           return bookmark ? [{ ...bookmark, added_by: jb.added_by }] : []
         }) || []
-
-        // Also fetch bookmarks with direct collection_id for backwards compatibility
-        const { data: directBookmarks } = await supabase
-          .from('bookmarks')
-          .select('*')
-          .eq('collection_id', collection.id)
-          .limit(3)
 
         if (process.env.NODE_ENV === 'development') console.log(`Collection ${collection.id}: Junction=${bookmarks.length}, Direct=${directBookmarks?.length || 0}`)
 
@@ -280,12 +294,6 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
 
         // If not the owner, filter out bookmarks the user has removed from their view
         if (collection.user_id !== user.id) {
-          const { data: removedBookmarks } = await supabase
-            .from('removed_collection_bookmarks')
-            .select('bookmark_id')
-            .eq('collection_id', collection.id)
-            .eq('user_id', user.id)
-
           const removedIds = new Set(removedBookmarks?.map((rb: { bookmark_id: string }) => rb.bookmark_id) || [])
           bookmarks = bookmarks.filter((b: Bookmark) => !removedIds.has(b.id))
         }
@@ -316,13 +324,21 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   // Listen for custom event to open Add Collection modal
   useEffect(() => {
     const handleOpenAddCollectionModal = () => {
-      setAddCollectionByCodeModalOpen(true)
+      setModalTab('create')
+      setModalOpen(true)
+    }
+
+    const handleOpenAddCollectionByCodeModal = () => {
+      setModalTab('add')
+      setModalOpen(true)
     }
 
     window.addEventListener('open-add-collection-modal', handleOpenAddCollectionModal)
+    window.addEventListener('open-add-collection-by-code-modal', handleOpenAddCollectionByCodeModal)
 
     return () => {
       window.removeEventListener('open-add-collection-modal', handleOpenAddCollectionModal)
+      window.removeEventListener('open-add-collection-by-code-modal', handleOpenAddCollectionByCodeModal)
     }
   }, [])
 
@@ -1237,7 +1253,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       })
       setTimeout(() => setToast(null), 3000)
 
-      setAddCollectionByCodeModalOpen(false)
+      setModalOpen(false)
       setCollectionCode('')
     } catch (err) {
       console.error('Failed to add collection:', err)
@@ -1753,43 +1769,118 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       )}
 
       {/* Create Collection Modal */}
-      <Modal isOpen={modalOpen} onClose={() => { setModalOpen(false); setErrorMessage(null); }} title="New Collection">
-        <form onSubmit={createCollection} className="space-y-4">
-          {errorMessage && (
-            <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(220, 38, 38, 0.1)', border: '1px solid #dc2626', color: '#dc2626' }}>
-              {errorMessage}
-            </div>
-          )}
-          <Input
-            label="Collection Name"
-            placeholder="My Favorite Articles"
-            value={formData.name}
-            onChange={(e) => { setFormData({ ...formData, name: e.target.value }); setErrorMessage(null); }}
-            required
-          />
-          <Textarea
-            label="Description (optional)"
-            placeholder="A collection of useful resources"
-            value={formData.description}
-            onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-            rows={3}
-          />
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={formData.is_public}
-              onChange={(e) => setFormData({ ...formData, is_public: e.target.checked })}
-              className="w-4 h-4 rounded"
+      <Modal isOpen={modalOpen} onClose={() => { setModalOpen(false); setErrorMessage(null); setModalTab('create'); setCollectionCode(''); }} title={modalTab === 'create' ? 'New Collection' : 'Add Collection'}>
+        {/* Tabs */}
+        <div className="flex gap-1 mb-4 p-1 rounded-lg" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+          <button
+            type="button"
+            onClick={() => setModalTab('create')}
+            className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all ${
+              modalTab === 'create'
+                ? 'bg-white dark:bg-gray-800 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+            style={modalTab === 'create' ? { backgroundColor: 'var(--bg-primary)', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' } : {}}
+          >
+            Create Collection
+          </button>
+          <button
+            type="button"
+            onClick={() => setModalTab('add')}
+            className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all ${
+              modalTab === 'add'
+                ? 'bg-white dark:bg-gray-800 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+            style={modalTab === 'add' ? { backgroundColor: 'var(--bg-primary)', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' } : {}}
+          >
+            Add Collection
+          </button>
+        </div>
+
+        {/* Create Collection Tab */}
+        {modalTab === 'create' && (
+          <form onSubmit={createCollection} className="space-y-4">
+            {errorMessage && (
+              <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(220, 38, 38, 0.1)', border: '1px solid #dc2626', color: '#dc2626' }}>
+                {errorMessage}
+              </div>
+            )}
+            <Input
+              label="Collection Name"
+              placeholder="My Favorite Articles"
+              value={formData.name}
+              onChange={(e) => { setFormData({ ...formData, name: e.target.value }); setErrorMessage(null); }}
+              required
             />
-            <span className="text-sm text-gray-900 dark:text-gray-100">Make public (shareable)</span>
-          </label>
-          <div className="flex gap-3 pt-2">
-            <Button type="button" variant="secondary" onClick={() => { setModalOpen(false); setErrorMessage(null); }} className="flex-1">
-              Cancel
-            </Button>
-            <Button type="submit" className="flex-1">Create Collection</Button>
+            <Textarea
+              label="Description (optional)"
+              placeholder="A collection of useful resources"
+              value={formData.description}
+              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              rows={3}
+            />
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formData.is_public}
+                onChange={(e) => setFormData({ ...formData, is_public: e.target.checked })}
+                className="w-4 h-4 rounded"
+              />
+              <span className="text-sm text-gray-900 dark:text-gray-100">Make public (shareable)</span>
+            </label>
+            <div className="flex gap-3 pt-2">
+              <Button type="button" variant="secondary" onClick={() => { setModalOpen(false); setErrorMessage(null); }} className="flex-1">
+                Cancel
+              </Button>
+              <Button type="submit" className="flex-1">Create Collection</Button>
+            </div>
+          </form>
+        )}
+
+        {/* Add Collection by Code Tab */}
+        {modalTab === 'add' && (
+          <div className="space-y-4">
+            <p style={{ color: 'var(--text-secondary)' }}>
+              Enter the collection code to add it to your collections.
+            </p>
+            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+              <strong>Public collections:</strong> Anyone with the code can edit<br/>
+              <strong>Private collections:</strong> Only the owner can edit, others can view only
+            </p>
+            <Input
+              label="Collection Code"
+              placeholder="e.g., a1b2c3d4"
+              value={collectionCode}
+              onChange={(e) => setCollectionCode(e.target.value)}
+              onKeyUp={(e) => {
+                if (e.key === 'Enter') {
+                  addCollectionByCode()
+                }
+              }}
+            />
+            <div className="flex gap-3 pt-2">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => { setModalOpen(false); setCollectionCode(''); }}
+                className="flex-1"
+                disabled={addCollectionLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={addCollectionByCode}
+                disabled={!collectionCode.trim() || addCollectionLoading}
+                className="flex-1"
+                style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)', color: 'white' }}
+              >
+                {addCollectionLoading ? 'Adding...' : 'Add Collection'}
+              </Button>
+            </div>
           </div>
-        </form>
+        )}
       </Modal>
 
       {/* Add to Collection Modal */}
@@ -2272,50 +2363,6 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
               style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)', color: 'white' }}
             >
               {importLoading ? 'Loading...' : 'View Collection'}
-            </Button>
-          </div>
-        </div>
-      </Modal>
-
-      {/* Add Collection by Code Modal */}
-      <Modal isOpen={addCollectionByCodeModalOpen} onClose={() => { setAddCollectionByCodeModalOpen(false); setCollectionCode(''); }} title="Add Collection by Code">
-        <div className="space-y-4">
-          <p style={{ color: 'var(--text-secondary)' }}>
-            Enter the collection code to add it to your collections.
-          </p>
-          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-            <strong>Public collections:</strong> Anyone with the code can edit<br/>
-            <strong>Private collections:</strong> Only the owner can edit, others can view only
-          </p>
-          <Input
-            label="Collection Code"
-            placeholder="e.g., a1b2c3d4"
-            value={collectionCode}
-            onChange={(e) => setCollectionCode(e.target.value)}
-            onKeyUp={(e) => {
-              if (e.key === 'Enter') {
-                addCollectionByCode()
-              }
-            }}
-          />
-          <div className="flex gap-3 pt-2">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => { setAddCollectionByCodeModalOpen(false); setCollectionCode(''); }}
-              className="flex-1"
-              disabled={addCollectionLoading}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={addCollectionByCode}
-              disabled={!collectionCode.trim() || addCollectionLoading}
-              className="flex-1"
-              style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)', color: 'white' }}
-            >
-              {addCollectionLoading ? 'Adding...' : 'Add Collection'}
             </Button>
           </div>
         </div>
