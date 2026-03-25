@@ -13,6 +13,16 @@ import {
   markGuestMode
 } from '@/lib/guest-storage'
 
+type BookmarkTagRow = {
+  bookmark_id: string
+  tags: Tag | Tag[] | null
+}
+
+function normalizeTags(tags: Tag | Tag[] | null | undefined): Tag[] {
+  if (!tags) return []
+  return Array.isArray(tags) ? tags.filter(Boolean) : [tags]
+}
+
 export default function BookmarksPage() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   const [tags, setTags] = useState<Tag[]>([])
@@ -130,10 +140,16 @@ export default function BookmarksPage() {
         if (tagsRes.data) setTags(tagsRes.data)
 
         const tagMap: Record<string, Tag[]> = {}
-        bookmarkTagsRes.data?.forEach((bt: { bookmark_id: string; tags: Tag[] }) => {
-          if (bt.tags && bt.tags.length > 0) {
-            if (!tagMap[bt.bookmark_id]) tagMap[bt.bookmark_id] = []
-            tagMap[bt.bookmark_id].push(...bt.tags)
+        bookmarkTagsRes.data?.forEach((bt: BookmarkTagRow) => {
+          // Always create an entry in the map (even if empty array)
+          // This ensures real-time updates can add tags later
+          if (!tagMap[bt.bookmark_id]) {
+            tagMap[bt.bookmark_id] = []
+          }
+          // Add tags if they exist (handle multiple rows per bookmark)
+          const normalizedTags = normalizeTags(bt.tags)
+          if (normalizedTags.length > 0) {
+            tagMap[bt.bookmark_id].push(...normalizedTags)
           }
         })
         setBookmarkTags(tagMap)

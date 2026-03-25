@@ -79,7 +79,7 @@ export const POST = withApiHandler(async (request: NextRequest) => {
       if (!existingInCollection) {
         await supabase
           .from('collection_bookmarks')
-          .insert({ collection_id, bookmark_id: existing.id })
+          .insert({ collection_id, bookmark_id: existing.id, added_by: user.id })
       }
 
       const { data: updated } = await supabase
@@ -119,7 +119,7 @@ export const POST = withApiHandler(async (request: NextRequest) => {
   if (collection_id && data?.id) {
     const { error: collectionError } = await supabase
       .from('collection_bookmarks')
-      .insert({ collection_id, bookmark_id: data.id })
+      .insert({ collection_id, bookmark_id: data.id, added_by: user.id })
 
     if (collectionError) {
       // Log the error but don't fail the entire request

@@ -23,6 +23,16 @@ interface BookmarksListProps {
   isGuest?: boolean
 }
 
+type BookmarkTagRow = {
+  tag_id: string
+  tags: Tag | Tag[] | null
+}
+
+function normalizeTags(tags: Tag | Tag[] | null | undefined): Tag[] {
+  if (!tags) return []
+  return Array.isArray(tags) ? tags.filter(Boolean) : [tags]
+}
+
 // Simple memoized bookmark card
 const BookmarkCard = memo(({ bookmark, tags, onFavorite, onRead, onEdit, onDelete, onAddToCollection }: {
   bookmark: Bookmark
@@ -70,7 +80,7 @@ const BookmarkCard = memo(({ bookmark, tags, onFavorite, onRead, onEdit, onDelet
               <p className="text-sm mt-2 line-clamp-2" style={{ color: 'var(--text-secondary)' }}>{bookmark.description}</p>
             )}
             <div className="flex gap-2 mt-2 flex-wrap">
-              {tags.map(tag => (
+              {tags.length > 0 && tags.map(tag => (
                 <span key={tag.id} className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: tag.color + '20', color: tag.color }}>
                   {tag.name}
                 </span>
@@ -265,7 +275,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
                 .select('tag_id, tags(*)')
                 .eq('bookmark_id', newBookmark.id)
 
-              const fetchedTags = tagData?.flatMap((bt: { tags: Tag[] }) => bt.tags || []).filter(Boolean) || []
+              const fetchedTags = tagData?.flatMap((bt: BookmarkTagRow) => normalizeTags(bt.tags)) || []
               if (process.env.NODE_ENV === 'development') {
                 console.log('Fetched tags for new bookmark:', fetchedTags)
               }
@@ -334,7 +344,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
             .select('tag_id, tags(*)')
             .eq('bookmark_id', bookmarkId)
 
-          const fetchedTags = tagData?.flatMap((bt: { tags: Tag[] }) => bt.tags || []).filter(Boolean) || []
+          const fetchedTags = tagData?.flatMap((bt: BookmarkTagRow) => normalizeTags(bt.tags)) || []
 
           setBookmarkTags(prev => ({
             ...prev,
