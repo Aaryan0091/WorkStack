@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
         if (!rpcError && rpcResult !== null) {
           newTotalTime = rpcResult
         }
-      } catch (rpcError) {
+      } catch {
         // RPC may not exist, use client-side calculation
         console.warn('[Upsert API] RPC not available, using client-side calculation - may have race conditions')
       }

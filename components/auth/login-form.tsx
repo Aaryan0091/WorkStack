@@ -355,7 +355,7 @@ export function LoginForm() {
               Reset your password
             </h3>
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-              Enter your email address and we'll send you a link to reset your password.
+              Enter your email address and we&apos;ll send you a link to reset your password.
             </p>
           </div>
 
@@ -458,7 +458,7 @@ export function LoginForm() {
                 <div>
                   <span className="text-sm font-semibold block" style={{ color: '#22c55e' }}>Check your inbox</span>
                   <span className="text-sm block mt-1" style={{ color: 'var(--text-secondary)' }}>
-                    We've sent a password reset link to your email. It may take a moment to arrive.
+                    We&apos;ve sent a password reset link to your email. It may take a moment to arrive.
                   </span>
                 </div>
               </div>

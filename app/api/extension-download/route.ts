@@ -3,7 +3,7 @@ import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { existsSync } from 'fs'
 
-export async function GET(request: Request) {
+export async function GET() {
   try {
     // Try to serve the file directly from public folder
     const filePath = join(process.cwd(), 'public', 'extension', 'workstack-extension.zip')

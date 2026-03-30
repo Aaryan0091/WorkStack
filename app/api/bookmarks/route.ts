@@ -10,6 +10,7 @@ import {
   corsHeaders,
   handleOptionsRequest
 } from '@/lib/api-response'
+import { applyAiTagsToBookmark } from '@/lib/ai-tagging'
 
 // Validate required environment variables
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -19,8 +20,6 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing required environment variables: NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY must be set')
 }
-
-const GROQ_API_KEY = process.env.GROQ_API_KEY
 
 // Handle OPTIONS preflight request
 export async function OPTIONS(request: NextRequest) {
@@ -82,6 +81,11 @@ export const POST = withApiHandler(async (request: NextRequest) => {
           .insert({ collection_id, bookmark_id: existing.id, added_by: user.id })
       }
 
+      await supabase
+        .from('bookmarks')
+        .update({ collection_id })
+        .eq('id', existing.id)
+
       const { data: updated } = await supabase
         .from('bookmarks')
         .select()
@@ -104,6 +108,7 @@ export const POST = withApiHandler(async (request: NextRequest) => {
       description: sanitizedDescription || null,
       notes: sanitizedNotes || null,
       folder_id: folder_id || null,
+      collection_id: collection_id || null,
       is_read: true,
       is_favorite: false,
     })
@@ -129,23 +134,19 @@ export const POST = withApiHandler(async (request: NextRequest) => {
     }
   }
 
-  // Trigger AI auto-tagging in background (fire and forget)
-  if (GROQ_API_KEY && data?.id) {
-    // Auto-detect base URL from request (works in both dev and production)
-    const baseUrl = `${request.nextUrl.protocol}//${request.nextUrl.host}`
-    // Don't await - let it run in background
-    fetch(`${baseUrl}/api/ai/auto-tag`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': authHeader || '',
-      },
-      body: JSON.stringify({ bookmark_id: data.id }),
-    }).catch((err) => {
-      // Log errors for monitoring in production
-      console.error('[Background Auto-Tag] Failed:', err)
-      // Don't fail the request - bookmark was created successfully
-    })
+  // Apply AI/fallback tags before returning so extension and API callers get consistent tagging.
+  if (data?.id) {
+    try {
+      await applyAiTagsToBookmark(
+        user.id,
+        data.id,
+        data.title,
+        data.url,
+        data.description || ''
+      )
+    } catch (error) {
+      console.error('[Create Bookmark] Auto-tagging failed:', error)
+    }
   }
 
   return corsHeaders(apiSuccess({ bookmark: data }, 'Bookmark created successfully', 201), request)

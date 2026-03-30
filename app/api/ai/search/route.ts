@@ -67,6 +67,38 @@ export async function POST(request: NextRequest) {
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
     const searchLower = query.toLowerCase().trim()
 
+    let bookmarkIdsForCollection: string[] | null = null
+    if (collection_id) {
+      const [collectionBookmarksResult, legacyBookmarksResult] = await Promise.all([
+        supabase
+          .from('collection_bookmarks')
+          .select('bookmark_id')
+          .eq('collection_id', collection_id),
+        supabase
+          .from('bookmarks')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('collection_id', collection_id)
+      ])
+
+      if (collectionBookmarksResult.error) {
+        console.error('Search collection filter error:', collectionBookmarksResult.error)
+        const response = NextResponse.json({ error: collectionBookmarksResult.error.message }, { status: 500 })
+        return corsHeaders(response, request)
+      }
+
+      if (legacyBookmarksResult.error) {
+        console.error('Search legacy collection filter error:', legacyBookmarksResult.error)
+        const response = NextResponse.json({ error: legacyBookmarksResult.error.message }, { status: 500 })
+        return corsHeaders(response, request)
+      }
+
+      bookmarkIdsForCollection = Array.from(new Set([
+        ...(collectionBookmarksResult.data || []).map((row: { bookmark_id: string }) => row.bookmark_id),
+        ...(legacyBookmarksResult.data || []).map((row: { id: string }) => row.id)
+      ]))
+    }
+
     // Build base query
     let queryBuilder = supabase
       .from('bookmarks')
@@ -84,7 +116,12 @@ export async function POST(request: NextRequest) {
 
     // Filter by collection if provided
     if (collection_id) {
-      queryBuilder = queryBuilder.eq('collection_id', collection_id)
+      if (!bookmarkIdsForCollection || bookmarkIdsForCollection.length === 0) {
+        const response = NextResponse.json({ results: [] })
+        return corsHeaders(response, request)
+      }
+
+      queryBuilder = queryBuilder.in('id', bookmarkIdsForCollection)
     }
 
     const { data: bookmarks, error } = await queryBuilder

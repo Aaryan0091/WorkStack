@@ -23,6 +23,7 @@ export default function SmartSearchPage() {
   const [selectedCollection, setSelectedCollection] = useState<string>('')
   const [aiEnabled, setAiEnabled] = useState(true)
   const [allBookmarks, setAllBookmarks] = useState<BookmarkWithTags[]>([])
+  const [collectionBookmarkMap, setCollectionBookmarkMap] = useState<Record<string, Set<string>>>({})
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   // Load collections and all bookmarks on mount
@@ -33,8 +34,52 @@ export default function SmartSearchPage() {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return
 
-        const { data: collectionsData } = await supabase.from('collections').select('*').order('name')
-        if (collectionsData) setCollections(collectionsData)
+        const [ownedCollectionsRes, sharedCollectionsRes] = await Promise.all([
+          supabase
+            .from('collections')
+            .select('*')
+            .eq('user_id', user.id)
+            .order('name'),
+          supabase
+            .from('shared_collections')
+            .select('collection_id, collections(*)')
+            .eq('user_id', user.id)
+        ])
+
+        const seenCollectionIds = new Set<string>()
+        const accessibleCollections = [
+          ...(ownedCollectionsRes.data || []),
+          ...(sharedCollectionsRes.data?.flatMap((row: { collections: Collection[] | Collection | null }) => {
+            if (!row.collections) return []
+            return Array.isArray(row.collections) ? row.collections : [row.collections]
+          }) || [])
+        ].filter((collection: Collection) => {
+          if (seenCollectionIds.has(collection.id)) return false
+          seenCollectionIds.add(collection.id)
+          return true
+        }).sort((a, b) => a.name.localeCompare(b.name))
+
+        setCollections(accessibleCollections)
+
+        const accessibleCollectionIds = accessibleCollections.map((collection) => collection.id)
+
+        let nextCollectionBookmarkMap: Record<string, Set<string>> = {}
+        if (accessibleCollectionIds.length > 0) {
+          const { data: collectionBookmarksData } = await supabase
+            .from('collection_bookmarks')
+            .select('collection_id, bookmark_id')
+            .in('collection_id', accessibleCollectionIds)
+
+          nextCollectionBookmarkMap = (collectionBookmarksData || []).reduce<Record<string, Set<string>>>((acc, row: { collection_id: string; bookmark_id: string }) => {
+            if (!acc[row.collection_id]) {
+              acc[row.collection_id] = new Set()
+            }
+            acc[row.collection_id].add(row.bookmark_id)
+            return acc
+          }, {})
+        }
+
+        setCollectionBookmarkMap(nextCollectionBookmarkMap)
 
         // Fetch user's bookmarks with tags
         const { data: bookmarksData } = await supabase
@@ -79,14 +124,17 @@ export default function SmartSearchPage() {
   const clientSideSearch = useCallback((searchQuery: string) => {
     const q = searchQuery.toLowerCase().trim()
 
-    if (!q) {
-      return allBookmarks
-    }
-
     // Filter by collection first if selected
     let filtered = allBookmarks
     if (selectedCollection) {
-      filtered = filtered.filter(b => b.collection_id === selectedCollection)
+      const bookmarkIdsInCollection = collectionBookmarkMap[selectedCollection] || new Set<string>()
+      filtered = filtered.filter((bookmark) => {
+        return bookmark.collection_id === selectedCollection || bookmarkIdsInCollection.has(bookmark.id)
+      })
+    }
+
+    if (!q) {
+      return filtered
     }
 
     // Then search based on mode
@@ -107,13 +155,13 @@ export default function SmartSearchPage() {
           return title.includes(q) || url.includes(q)
       }
     })
-  }, [allBookmarks, selectedCollection, mode, getBookmarkTags])
+  }, [allBookmarks, selectedCollection, collectionBookmarkMap, mode, getBookmarkTags])
 
   // API search for semantic mode
   const semanticSearch = useCallback(async (searchQuery: string) => {
     const q = searchQuery.trim()
     if (!q) {
-      setResults(allBookmarks)
+      setResults(clientSideSearch(''))
       setLoading(false)
       return
     }
@@ -149,7 +197,7 @@ export default function SmartSearchPage() {
     } finally {
       setLoading(false)
     }
-  }, [allBookmarks, selectedCollection])
+  }, [selectedCollection, clientSideSearch])
 
   // Instant search effect - runs immediately when query, mode, or collection changes
   useEffect(() => {
@@ -160,11 +208,7 @@ export default function SmartSearchPage() {
 
     // If query is empty, immediately show all bookmarks
     if (!query.trim()) {
-      let filtered = allBookmarks
-      if (selectedCollection) {
-        filtered = allBookmarks.filter(b => b.collection_id === selectedCollection)
-      }
-      setResults(filtered)
+      setResults(clientSideSearch(''))
       setLoading(false)
       return
     }
@@ -188,7 +232,7 @@ export default function SmartSearchPage() {
         clearTimeout(searchTimeoutRef.current)
       }
     }
-  }, [query, mode, selectedCollection, allBookmarks, clientSideSearch, semanticSearch])
+  }, [query, mode, selectedCollection, allBookmarks, collectionBookmarkMap, clientSideSearch, semanticSearch])
 
   // Open bookmark
   const openBookmark = (url: string) => {

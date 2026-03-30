@@ -97,7 +97,7 @@ export function ExtensionSync() {
             action: 'storeAuthToken',
             authToken: session.access_token,
             apiBaseUrl: window.location.origin
-          }, (response: { success?: boolean } | undefined) => {
+          }, () => {
             if (timeoutId) {
               clearTimeout(timeoutId)
               timeoutId = null

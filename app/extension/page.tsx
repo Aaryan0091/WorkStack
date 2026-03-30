@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { isChromiumBased, getBrowserName } from '@/lib/browser-detect'
 import { checkExtensionWithTimeout, getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
@@ -18,6 +18,39 @@ export default function ExtensionPage() {
   const [debugInfo, setDebugInfo] = useState<Record<string, string>>({})
   const [showDebug, setShowDebug] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const updateDebugInfo = useCallback(() => {
+    const info: Record<string, string> = {
+      'Current URL': window.location.href,
+      'Browser': getBrowserName(),
+      'Extension Installed (sync)': isExtensionInstalledViaContentScript().toString(),
+      'Extension ID': getExtensionId() || 'None',
+      'Window chrome defined': (typeof window.chrome !== 'undefined').toString(),
+      'Chrome runtime defined': (window.chrome?.runtime !== undefined).toString(),
+      'Chrome runtime sendMessage': (typeof window.chrome?.runtime?.sendMessage === 'function').toString(),
+      'WorkStack installed marker': (window.workStackExtensionInstalled?.toString() || 'undefined'),
+      'WorkStack ID marker': (window.workStackExtensionId?.toString() || 'undefined'),
+    }
+    setDebugInfo(info)
+  }, [])
+
+  const checkExtensionInstalled = useCallback(async () => {
+    console.log('[Extension Page] Checking extension installation...')
+    updateDebugInfo()
+
+    // First check if content script marker is present
+    const syncCheck = isExtensionInstalledViaContentScript()
+    console.log('[Extension Page] Sync check result:', syncCheck)
+
+    // Then check via postMessage (works across isolated worlds)
+    const isInstalled = await checkExtensionWithTimeout(3000)
+    console.log('[Extension Page] Async check result:', isInstalled)
+
+    // Final update after check
+    updateDebugInfo()
+
+    setExtensionInstalled(isInstalled)
+  }, [updateDebugInfo])
 
   useEffect(() => {
     setMounted(true)
@@ -70,45 +103,12 @@ export default function ExtensionPage() {
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       clearInterval(debugInterval)
     }
-  }, [showDebug])
-
-  const updateDebugInfo = () => {
-    const info: Record<string, string> = {
-      'Current URL': window.location.href,
-      'Browser': browser,
-      'Extension Installed (sync)': isExtensionInstalledViaContentScript().toString(),
-      'Extension ID': getExtensionId() || 'None',
-      'Window chrome defined': (typeof window.chrome !== 'undefined').toString(),
-      'Chrome runtime defined': (window.chrome?.runtime !== undefined).toString(),
-      'Chrome runtime sendMessage': (typeof window.chrome?.runtime?.sendMessage === 'function').toString(),
-      'WorkStack installed marker': (window.workStackExtensionInstalled?.toString() || 'undefined'),
-      'WorkStack ID marker': (window.workStackExtensionId?.toString() || 'undefined'),
-    }
-    setDebugInfo(info)
-  }
+  }, [checkExtensionInstalled, showDebug, updateDebugInfo])
 
   // Calculate scale based on scroll (1.5 at top, 1 at 100px scroll)
   // Only apply animation after component is mounted to avoid hydration mismatch
   const scale = mounted ? Math.max(1, 1.5 - scrollY / 200) : 1
   const opacity = mounted ? Math.max(0.7, 1 - scrollY / 500) : 1
-
-  const checkExtensionInstalled = async () => {
-    console.log('[Extension Page] Checking extension installation...')
-    updateDebugInfo()
-
-    // First check if content script marker is present
-    const syncCheck = isExtensionInstalledViaContentScript()
-    console.log('[Extension Page] Sync check result:', syncCheck)
-
-    // Then check via postMessage (works across isolated worlds)
-    const isInstalled = await checkExtensionWithTimeout(3000)
-    console.log('[Extension Page] Async check result:', isInstalled)
-
-    // Final update after check
-    updateDebugInfo()
-
-    setExtensionInstalled(isInstalled)
-  }
 
   const downloadExtension = async () => {
     setDownloading(true)

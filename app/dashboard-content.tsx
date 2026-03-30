@@ -3,10 +3,13 @@
 import { useEffect, useState, useRef, useMemo, lazy, Suspense } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { getExtensionId, isExtensionInstalledViaContentScript, checkExtensionLocal } from '@/lib/extension-detect'
+import { createBookmarksViaApi } from '@/lib/client-bookmark-api'
+import { getExtensionId, isExtensionInstalledViaContentScript, checkExtensionLocal, sendExtensionMessage } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/input'
 import { Modal } from '@/components/ui/modal'
 import { BookmarkMenu } from '@/components/bookmark-menu'
 import type { Bookmark, Collection } from '@/lib/types'
@@ -36,6 +39,13 @@ function safeGetHostname(url: string): string {
   } catch {
     return url
   }
+}
+
+interface OpenTabItem {
+  tabId: number
+  url: string
+  title: string
+  favicon?: string
 }
 
 export function DashboardContent({ initialBookmarks, initialCollections, initialStats }: { initialBookmarks: Bookmark[]; initialCollections: Collection[]; initialStats: { totalBookmarks: number; favoritesCount: number; unreadCount: number } }) {
@@ -72,6 +82,32 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     ended_at: string | null
   }>>([])
   const [loadingPreviousActivity, setLoadingPreviousActivity] = useState(false)
+  const [historyActionLoading, setHistoryActionLoading] = useState(false)
+  const [historyActionMessage, setHistoryActionMessage] = useState<string | null>(null)
+  const [showHistoryCollectionModal, setShowHistoryCollectionModal] = useState(false)
+  const [showHistoryExistingCollectionModal, setShowHistoryExistingCollectionModal] = useState(false)
+  const [showHistoryCreateCollectionModal, setShowHistoryCreateCollectionModal] = useState(false)
+  const [historyCollectionError, setHistoryCollectionError] = useState<string | null>(null)
+  const [historyCollectionForm, setHistoryCollectionForm] = useState({
+    name: '',
+    description: '',
+    is_public: false,
+  })
+  const [showOpenTabsModal, setShowOpenTabsModal] = useState(false)
+  const [openTabsData, setOpenTabsData] = useState<OpenTabItem[]>([])
+  const [loadingOpenTabs, setLoadingOpenTabs] = useState(false)
+  const [openTabsExtensionAvailable, setOpenTabsExtensionAvailable] = useState(true)
+  const [openTabsActionLoading, setOpenTabsActionLoading] = useState(false)
+  const [openTabsActionMessage, setOpenTabsActionMessage] = useState<string | null>(null)
+  const [showOpenTabsCollectionModal, setShowOpenTabsCollectionModal] = useState(false)
+  const [showOpenTabsExistingCollectionModal, setShowOpenTabsExistingCollectionModal] = useState(false)
+  const [showOpenTabsCreateCollectionModal, setShowOpenTabsCreateCollectionModal] = useState(false)
+  const [openTabsCollectionError, setOpenTabsCollectionError] = useState<string | null>(null)
+  const [openTabsCollectionForm, setOpenTabsCollectionForm] = useState({
+    name: '',
+    description: '',
+    is_public: false,
+  })
   const [sessionTabs, setSessionTabs] = useState<Array<{
     url: string
     title: string
@@ -84,11 +120,48 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const tokenSyncTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const extensionCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const stopTrackingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const freshDataRefreshTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null)
 
   // Check if browser is Chromium-based AND not mobile (supports Chrome extensions)
   // Use state to avoid hydration mismatch - initialized to false for SSR consistency
   const [isChromium, setIsChromium] = useState(false)
+
+  const groupedPreviousActivity = useMemo(() => {
+    const groupedByUrl = new Map<string, {
+      domain: string
+      url: string
+      title: string
+      totalSeconds: number
+      visitCount: number
+      lastVisited: string
+    }>()
+
+    previousActivityData.forEach((item) => {
+      const urlKey = item.url
+
+      if (!groupedByUrl.has(urlKey)) {
+        groupedByUrl.set(urlKey, {
+          domain: item.domain,
+          url: item.url,
+          title: item.title || item.url,
+          totalSeconds: item.duration_seconds || 0,
+          visitCount: 1,
+          lastVisited: item.started_at
+        })
+      } else {
+        const existing = groupedByUrl.get(urlKey)!
+        existing.totalSeconds += item.duration_seconds || 0
+        existing.visitCount += 1
+        if (item.started_at > existing.lastVisited) {
+          existing.lastVisited = item.started_at
+          existing.title = item.title || item.url
+        }
+      }
+    })
+
+    return Array.from(groupedByUrl.values()).sort((a, b) => b.totalSeconds - a.totalSeconds)
+  }, [previousActivityData])
 
   // Check if browser is Chromium-based after mount (client-only)
   useEffect(() => {
@@ -222,6 +295,15 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     }
   }
 
+  const scheduleFreshDataRefresh = (delay = 0) => {
+    if (freshDataRefreshTimeoutRef.current) return
+
+    freshDataRefreshTimeoutRef.current = setTimeout(() => {
+      freshDataRefreshTimeoutRef.current = null
+      fetchFreshData()
+    }, delay)
+  }
+
   // Check extension on mount (deferred to not block initial render)
   useEffect(() => {
 
@@ -318,7 +400,19 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
               filter: `user_id=eq.${user.id}`
             },
             () => {
-              fetchFreshData()
+              scheduleFreshDataRefresh(100)
+            }
+          )
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'collections',
+              filter: `user_id=eq.${user.id}`
+            },
+            () => {
+              scheduleFreshDataRefresh(100)
             }
           )
           .subscribe((status: string) => {
@@ -371,21 +465,23 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         checkExtensionStatus()
-        fetchFreshData()
+        scheduleFreshDataRefresh()
       }
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    const extensionCheckTimeout = extensionCheckTimeoutRef.current
+    const stopTrackingTimeout = stopTrackingTimeoutRef.current
+    const freshDataRefreshTimeout = freshDataRefreshTimeoutRef.current
 
     return () => {
       // Clear all timeouts
       if (initTimerRef.current) clearTimeout(initTimerRef.current)
       if (statusCheckTimerRef.current) clearTimeout(statusCheckTimerRef.current)
       if (tokenSyncTimeoutRef.current) clearTimeout(tokenSyncTimeoutRef.current)
-      if (extensionCheckTimeoutRef.current) clearTimeout(extensionCheckTimeoutRef.current)
-      // Capture ref value locally to avoid stale closure
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      const stopTrackingTimeout = stopTrackingTimeoutRef.current
+      if (extensionCheckTimeout) clearTimeout(extensionCheckTimeout)
       if (stopTrackingTimeout) clearTimeout(stopTrackingTimeout)
+      if (freshDataRefreshTimeout) clearTimeout(freshDataRefreshTimeout)
 
       // Clear interval
       if (checkIntervalRef.current) {
@@ -564,6 +660,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const showPreviousActivity = async () => {
     setShowPreviousActivityModal(true)
     setLoadingPreviousActivity(true)
+    setHistoryActionMessage(null)
 
     try {
       const { data: { user } } = await supabase.auth.getUser()
@@ -600,6 +697,291 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       // Error fetching previous activity
     } finally {
       setLoadingPreviousActivity(false)
+    }
+  }
+
+  const resetHistoryCollectionFlow = () => {
+    setShowHistoryCollectionModal(false)
+    setShowHistoryExistingCollectionModal(false)
+    setShowHistoryCreateCollectionModal(false)
+    setHistoryCollectionError(null)
+    setHistoryCollectionForm({ name: '', description: '', is_public: false })
+  }
+
+  const resetOpenTabsCollectionFlow = () => {
+    setShowOpenTabsCollectionModal(false)
+    setShowOpenTabsExistingCollectionModal(false)
+    setShowOpenTabsCreateCollectionModal(false)
+    setOpenTabsCollectionError(null)
+    setOpenTabsCollectionForm({ name: '', description: '', is_public: false })
+  }
+
+  const closeOpenTabsFlow = () => {
+    setShowOpenTabsModal(false)
+    setLoadingOpenTabs(false)
+    setOpenTabsExtensionAvailable(true)
+    setOpenTabsActionLoading(false)
+    setOpenTabsActionMessage(null)
+    setOpenTabsData([])
+    resetOpenTabsCollectionFlow()
+  }
+
+  const buildBulkAddMessage = ({
+    added,
+    updated,
+    alreadyExists,
+    failed,
+  }: {
+    added: number
+    updated: number
+    alreadyExists: number
+    failed: number
+  }) => {
+    const formatCount = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`
+    const parts = [
+      added > 0 ? `${formatCount(added, 'bookmark')} added` : null,
+      updated > 0 ? `${formatCount(updated, 'bookmark')} added to collection` : null,
+      alreadyExists > 0 ? `${formatCount(alreadyExists, 'bookmark')} already exists` : null,
+      failed > 0 ? `${formatCount(failed, 'bookmark')} failed` : null,
+    ].filter(Boolean)
+
+    return parts.length > 0 ? parts.join(', ') : 'No bookmarks were added'
+  }
+
+  const addHistoryItemsToBookmarks = async (collectionId?: string) => {
+    if (groupedPreviousActivity.length === 0) return
+
+    setHistoryActionLoading(true)
+    setHistoryActionMessage(null)
+    setHistoryCollectionError(null)
+
+    let added = 0
+    let alreadyExists = 0
+    let updated = 0
+    let failed = 0
+
+    const batchResults = await createBookmarksViaApi(
+      groupedPreviousActivity.map((item) => ({
+        url: item.url,
+        title: item.title || safeGetHostname(item.url),
+        description: item.domain,
+        collection_id: collectionId || null
+      }))
+    )
+
+    for (const item of batchResults) {
+      if (!item.ok) {
+        failed++
+        console.error('[History Bookmark Add] Failed:', item.error)
+        continue
+      }
+
+      const result = item.result
+      if (!result) {
+        failed++
+        continue
+      }
+
+      if (result.duplicate) {
+        alreadyExists++
+      } else if (result.updated) {
+        updated++
+      } else if (result.bookmark) {
+        added++
+      }
+    }
+
+    await fetchFreshData()
+
+    setHistoryActionLoading(false)
+    resetHistoryCollectionFlow()
+    setHistoryActionMessage(buildBulkAddMessage({ added, updated, alreadyExists, failed }))
+  }
+
+  const createCollectionFromHistory = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    const trimmedName = historyCollectionForm.name.trim()
+    if (!trimmedName) {
+      setHistoryCollectionError('Collection name is required.')
+      return
+    }
+
+    const duplicateName = collections.find((collection) => collection.name.toLowerCase() === trimmedName.toLowerCase())
+    if (duplicateName) {
+      setHistoryCollectionError(`A collection named "${trimmedName}" already exists.`)
+      return
+    }
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setHistoryCollectionError('You must be logged in to create a collection.')
+      return
+    }
+
+    setHistoryActionLoading(true)
+    setHistoryCollectionError(null)
+
+    try {
+      const share_code = Math.random().toString(36).substring(2, 10)
+      const share_slug = trimmedName.toLowerCase().replace(/\s+/g, '-') + '-' + Math.random().toString(36).substring(2, 11)
+
+      const { data, error } = await supabase
+        .from('collections')
+        .insert({
+          name: trimmedName,
+          description: historyCollectionForm.description || null,
+          is_public: historyCollectionForm.is_public,
+          share_slug,
+          share_code,
+          user_id: user.id,
+        })
+        .select()
+        .single()
+
+      if (error || !data) {
+        throw error || new Error('Failed to create collection')
+      }
+
+      setCollections([data, ...collections])
+      await addHistoryItemsToBookmarks(data.id)
+    } catch (error) {
+      console.error('[History Collection Create] Failed:', error)
+      setHistoryActionLoading(false)
+      setHistoryCollectionError('Failed to create collection. Please try again.')
+    }
+  }
+
+  const showOpenTabsBulkAdd = async () => {
+    setShowOpenTabsModal(true)
+    setLoadingOpenTabs(true)
+    setOpenTabsActionMessage(null)
+    setOpenTabsCollectionError(null)
+    setOpenTabsExtensionAvailable(true)
+
+    try {
+      const response = await sendExtensionMessage({ action: 'getOpenTabs' })
+      if (response?.tabs && Array.isArray(response.tabs)) {
+        setOpenTabsData(response.tabs as OpenTabItem[])
+        setOpenTabsExtensionAvailable(true)
+      } else {
+        setOpenTabsData([])
+        setOpenTabsExtensionAvailable(false)
+      }
+    } catch {
+      setOpenTabsData([])
+      setOpenTabsExtensionAvailable(false)
+    } finally {
+      setLoadingOpenTabs(false)
+    }
+  }
+
+  const addOpenTabsToBookmarks = async (collectionId?: string) => {
+    if (openTabsData.length === 0) return
+
+    setOpenTabsActionLoading(true)
+    setOpenTabsActionMessage(null)
+    setOpenTabsCollectionError(null)
+
+    let added = 0
+    let alreadyExists = 0
+    let updated = 0
+    let failed = 0
+
+    try {
+      const batchResults = await createBookmarksViaApi(
+        openTabsData.map((tab) => ({
+          url: tab.url,
+          title: tab.title || safeGetHostname(tab.url),
+          description: safeGetHostname(tab.url),
+          collection_id: collectionId || null
+        }))
+      )
+
+      for (const item of batchResults) {
+        if (!item.ok) {
+          failed++
+          console.error('[Open Tabs Add] Failed:', item.error)
+          continue
+        }
+
+        const result = item.result
+        if (!result) {
+          failed++
+          continue
+        }
+
+        if (result.duplicate) {
+          alreadyExists++
+        } else if (result.updated) {
+          updated++
+        } else if (result.bookmark) {
+          added++
+        }
+      }
+
+      await fetchFreshData()
+      resetOpenTabsCollectionFlow()
+      setOpenTabsActionMessage(buildBulkAddMessage({ added, updated, alreadyExists, failed }))
+    } catch (error) {
+      console.error('[Open Tabs Add] Failed:', error)
+      setOpenTabsActionMessage('Failed to add opened tabs. Please try again.')
+    } finally {
+      setOpenTabsActionLoading(false)
+    }
+  }
+
+  const createCollectionFromOpenTabs = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    const trimmedName = openTabsCollectionForm.name.trim()
+    if (!trimmedName) {
+      setOpenTabsCollectionError('Collection name is required.')
+      return
+    }
+
+    const duplicateName = collections.find((collection) => collection.name.toLowerCase() === trimmedName.toLowerCase())
+    if (duplicateName) {
+      setOpenTabsCollectionError(`A collection named "${trimmedName}" already exists.`)
+      return
+    }
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setOpenTabsCollectionError('You must be logged in to create a collection.')
+      return
+    }
+
+    setOpenTabsActionLoading(true)
+    setOpenTabsCollectionError(null)
+
+    try {
+      const share_code = Math.random().toString(36).substring(2, 10)
+      const share_slug = trimmedName.toLowerCase().replace(/\s+/g, '-') + '-' + Math.random().toString(36).substring(2, 11)
+
+      const { data, error } = await supabase
+        .from('collections')
+        .insert({
+          name: trimmedName,
+          description: openTabsCollectionForm.description || null,
+          is_public: openTabsCollectionForm.is_public,
+          share_slug,
+          share_code,
+          user_id: user.id,
+        })
+        .select()
+        .single()
+
+      if (error || !data) {
+        throw error || new Error('Failed to create collection')
+      }
+
+      setCollections([data, ...collections])
+      await addOpenTabsToBookmarks(data.id)
+    } catch (error) {
+      console.error('[Open Tabs Collection Create] Failed:', error)
+      setOpenTabsActionLoading(false)
+      setOpenTabsCollectionError('Failed to create collection. Please try again.')
     }
   }
 
@@ -828,7 +1210,25 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                     >
                       <span>📊 View History</span>
                     </button>
+                    {isChromium && (
+                      <button
+                        onClick={showOpenTabsBulkAdd}
+                        className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
+                        style={{ backgroundColor: '#0f766e', color: 'white', cursor: 'pointer' }}
+                      >
+                        <span>🗂️ Add All Opened Tabs</span>
+                      </button>
+                    )}
                   </div>
+                )}
+                {!isGuest && !(hasSavedSession || hasServerActivity) && isChromium && (
+                  <button
+                    onClick={showOpenTabsBulkAdd}
+                    className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
+                    style={{ backgroundColor: '#0f766e', color: 'white', cursor: 'pointer' }}
+                  >
+                    <span>🗂️ Add All Opened Tabs</span>
+                  </button>
                 )}
                 {/* Extension status when not tracking */}
                 {extensionInstalled === true ? (
@@ -1224,48 +1624,12 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
               <p className="text-sm mt-1">Track some activity to see your history here</p>
             </div>
           ) : (
-            <div className="max-h-96 overflow-y-auto pr-2" style={{
-              scrollbarWidth: 'thin',
-              scrollbarColor: 'rgba(139, 92, 246, 0.3) transparent'
-            }}>
-              {/* Group by full URL (each unique page/video shows separately) */}
-              {(() => {
-                const groupedByUrl = new Map<string, {
-                  domain: string
-                  url: string
-                  title: string
-                  totalSeconds: number
-                  visitCount: number
-                  lastVisited: string
-                }>()
-
-                previousActivityData.forEach(item => {
-                  const urlKey = item.url
-
-                  if (!groupedByUrl.has(urlKey)) {
-                    groupedByUrl.set(urlKey, {
-                      domain: item.domain,
-                      url: item.url,
-                      title: item.title || item.url,
-                      totalSeconds: item.duration_seconds || 0,
-                      visitCount: 1,
-                      lastVisited: item.started_at
-                    })
-                  } else {
-                    const existing = groupedByUrl.get(urlKey)!
-                    existing.totalSeconds += item.duration_seconds || 0
-                    existing.visitCount += 1
-                    if (item.started_at > existing.lastVisited) {
-                      existing.lastVisited = item.started_at
-                      existing.title = item.title || item.url
-                    }
-                  }
-                })
-
-                // Sort by total time spent
-                const sorted = Array.from(groupedByUrl.values()).sort((a, b) => b.totalSeconds - a.totalSeconds)
-
-                return sorted.map((item) => (
+            <>
+              <div className="max-h-96 overflow-y-auto pr-2" style={{
+                scrollbarWidth: 'thin',
+                scrollbarColor: 'rgba(139, 92, 246, 0.3) transparent'
+              }}>
+                {groupedPreviousActivity.map((item) => (
                   <a
                     key={item.url}
                     href={item.url}
@@ -1300,13 +1664,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                       </div>
                       <div className="text-right ml-3 flex-shrink-0">
                         <p className="text-sm font-medium" style={{ color: '#8b5cf6' }}>
-                          {item.totalSeconds < 60
-                            ? `${item.totalSeconds}s`
-                            : item.totalSeconds >= 3600
-                            ? `${Math.floor(item.totalSeconds / 3600)}h ${Math.floor((item.totalSeconds % 3600) / 60)}m`
-                            : item.totalSeconds % 60 === 0
-                            ? `${Math.floor(item.totalSeconds / 60)}m`
-                            : `${Math.floor(item.totalSeconds / 60)}m ${item.totalSeconds % 60}s`}
+                          {formatDuration(item.totalSeconds)}
                         </p>
                         <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
                           total time
@@ -1314,11 +1672,345 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                       </div>
                     </div>
                   </a>
-                ))
-              })()}
-            </div>
+                ))}
+              </div>
+
+              {historyActionMessage && (
+                <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(139, 92, 246, 0.12)', color: '#7c3aed' }}>
+                  {historyActionMessage}
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                <Button
+                  onClick={() => addHistoryItemsToBookmarks()}
+                  disabled={historyActionLoading}
+                  className="flex-1"
+                >
+                  {historyActionLoading ? 'Adding...' : 'Add All As Bookmarks'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setHistoryCollectionError(null)
+                    setShowHistoryCollectionModal(true)
+                  }}
+                  disabled={historyActionLoading}
+                  className="flex-1"
+                >
+                  Add In Collection
+                </Button>
+              </div>
+            </>
           )}
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={showHistoryCollectionModal}
+        onClose={resetHistoryCollectionFlow}
+        title="Add History To Collection"
+      >
+        <div className="space-y-4">
+          <p style={{ color: 'var(--text-secondary)' }}>
+            Choose how you want to save this history set.
+          </p>
+          <div className="flex flex-col gap-2">
+            <Button
+              onClick={() => {
+                setShowHistoryCollectionModal(false)
+                setShowHistoryExistingCollectionModal(true)
+              }}
+              disabled={historyActionLoading}
+            >
+              Add To Existing
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowHistoryCollectionModal(false)
+                setShowHistoryCreateCollectionModal(true)
+              }}
+              disabled={historyActionLoading}
+            >
+              Create Another
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showHistoryExistingCollectionModal}
+        onClose={resetHistoryCollectionFlow}
+        title="Select Collection"
+      >
+        <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
+          {collections.length === 0 ? (
+            <p style={{ color: 'var(--text-secondary)' }}>No collections yet. Create one first.</p>
+          ) : (
+            collections.map((collection) => (
+              <button
+                key={collection.id}
+                type="button"
+                onClick={() => addHistoryItemsToBookmarks(collection.id)}
+                disabled={historyActionLoading}
+                className="w-full text-left p-3 rounded-lg border transition-all duration-75 hover:scale-[1.01]"
+                style={{
+                  borderColor: 'var(--border-color)',
+                  backgroundColor: 'var(--bg-secondary)',
+                  cursor: historyActionLoading ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <p className="font-medium" style={{ color: 'var(--text-primary)' }}>{collection.name}</p>
+                {collection.description && (
+                  <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>{collection.description}</p>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showHistoryCreateCollectionModal}
+        onClose={resetHistoryCollectionFlow}
+        title="New Collection"
+      >
+        <form onSubmit={createCollectionFromHistory} className="space-y-4">
+          {historyCollectionError && (
+            <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(220, 38, 38, 0.1)', border: '1px solid #dc2626', color: '#dc2626' }}>
+              {historyCollectionError}
+            </div>
+          )}
+          <Input
+            label="Collection Name"
+            placeholder="History Collection"
+            value={historyCollectionForm.name}
+            onChange={(e) => setHistoryCollectionForm({ ...historyCollectionForm, name: e.target.value })}
+            required
+          />
+          <Textarea
+            label="Description (optional)"
+            placeholder="Bookmarks created from browsing history"
+            value={historyCollectionForm.description}
+            onChange={(e) => setHistoryCollectionForm({ ...historyCollectionForm, description: e.target.value })}
+            rows={3}
+          />
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={historyCollectionForm.is_public}
+              onChange={(e) => setHistoryCollectionForm({ ...historyCollectionForm, is_public: e.target.checked })}
+              className="w-4 h-4 rounded"
+            />
+            <span className="text-sm" style={{ color: 'var(--text-primary)' }}>Make public (shareable)</span>
+          </label>
+          <div className="flex gap-3 pt-2">
+            <Button type="button" variant="secondary" onClick={resetHistoryCollectionFlow} className="flex-1">
+              Cancel
+            </Button>
+            <Button type="submit" disabled={historyActionLoading} className="flex-1">
+              {historyActionLoading ? 'Creating...' : 'Create Collection'}
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal isOpen={showOpenTabsModal} onClose={closeOpenTabsFlow} title="Add All Opened Tabs">
+        <div className="space-y-4">
+          {loadingOpenTabs ? (
+            <div className="text-center py-8" style={{ color: 'var(--text-secondary)' }}>
+              <div className="inline-block w-6 h-6 border-2 border-teal-700 border-t-transparent rounded-full animate-spin mb-2"></div>
+              <p>Loading your opened tabs...</p>
+            </div>
+          ) : !openTabsExtensionAvailable ? (
+            <div className="p-4 rounded-lg text-sm" style={{ backgroundColor: 'rgba(251, 146, 60, 0.1)', border: '1px solid rgba(251, 146, 60, 0.3)' }}>
+              <p style={{ color: '#ea580c' }}>
+                Extension not detected. Install or enable the WorkStack extension to import all opened tabs.
+              </p>
+            </div>
+          ) : openTabsData.length === 0 ? (
+            <div className="text-center py-8" style={{ color: 'var(--text-secondary)' }}>
+              <p className="text-4xl mb-2">🗂️</p>
+              <p>No opened tabs found</p>
+              <p className="text-sm mt-1">Open some browser tabs and try again.</p>
+            </div>
+          ) : (
+            <>
+              <div className="p-3 rounded-lg" style={{ backgroundColor: 'rgba(15, 118, 110, 0.1)', color: '#0f766e' }}>
+                {openTabsData.length} opened {openTabsData.length === 1 ? 'tab is' : 'tabs are'} ready to add. Choose whether to save them as bookmarks or place them into a collection.
+              </div>
+
+              <div className="max-h-80 overflow-y-auto pr-2 space-y-2" style={{
+                scrollbarWidth: 'thin',
+                scrollbarColor: 'rgba(15, 118, 110, 0.3) transparent'
+              }}>
+                {openTabsData.map((tab) => (
+                  <div
+                    key={`${tab.tabId}-${tab.url}`}
+                    className="p-3 rounded-lg border"
+                    style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}
+                  >
+                    <div className="flex items-center gap-3">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={`https://www.google.com/s2/favicons?domain=${safeGetHostname(tab.url)}&sz=32`}
+                        className="w-6 h-6 rounded flex-shrink-0"
+                        alt="Favicon"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                          {tab.title || safeGetHostname(tab.url)}
+                        </p>
+                        <p className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
+                          {tab.url}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {openTabsActionMessage && (
+                <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(15, 118, 110, 0.12)', color: '#0f766e' }}>
+                  {openTabsActionMessage}
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                <Button
+                  onClick={() => addOpenTabsToBookmarks()}
+                  disabled={openTabsActionLoading}
+                  className="flex-1"
+                >
+                  {openTabsActionLoading ? 'Adding...' : 'Add All As Bookmarks'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setOpenTabsCollectionError(null)
+                    setShowOpenTabsCollectionModal(true)
+                  }}
+                  disabled={openTabsActionLoading}
+                  className="flex-1"
+                >
+                  Add In Collection
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showOpenTabsCollectionModal}
+        onClose={resetOpenTabsCollectionFlow}
+        title="Add Opened Tabs To Collection"
+      >
+        <div className="space-y-4">
+          <p style={{ color: 'var(--text-secondary)' }}>
+            Choose whether to place all opened tabs into an existing collection or create a new one first.
+          </p>
+          <div className="flex flex-col gap-2">
+            <Button
+              onClick={() => {
+                setShowOpenTabsCollectionModal(false)
+                setShowOpenTabsExistingCollectionModal(true)
+              }}
+              disabled={openTabsActionLoading}
+            >
+              Add To Existing
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowOpenTabsCollectionModal(false)
+                setShowOpenTabsCreateCollectionModal(true)
+              }}
+              disabled={openTabsActionLoading}
+            >
+              Create Another
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showOpenTabsExistingCollectionModal}
+        onClose={resetOpenTabsCollectionFlow}
+        title="Select Collection"
+      >
+        <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
+          {collections.length === 0 ? (
+            <p style={{ color: 'var(--text-secondary)' }}>No collections yet. Create one first.</p>
+          ) : (
+            collections.map((collection) => (
+              <button
+                key={collection.id}
+                type="button"
+                onClick={() => addOpenTabsToBookmarks(collection.id)}
+                disabled={openTabsActionLoading}
+                className="w-full text-left p-3 rounded-lg border transition-all duration-75 hover:scale-[1.01]"
+                style={{
+                  borderColor: 'var(--border-color)',
+                  backgroundColor: 'var(--bg-secondary)',
+                  cursor: openTabsActionLoading ? 'not-allowed' : 'pointer'
+                }}
+              >
+                <p className="font-medium" style={{ color: 'var(--text-primary)' }}>{collection.name}</p>
+                {collection.description && (
+                  <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>{collection.description}</p>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showOpenTabsCreateCollectionModal}
+        onClose={resetOpenTabsCollectionFlow}
+        title="New Collection"
+      >
+        <form onSubmit={createCollectionFromOpenTabs} className="space-y-4">
+          {openTabsCollectionError && (
+            <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(220, 38, 38, 0.1)', border: '1px solid #dc2626', color: '#dc2626' }}>
+              {openTabsCollectionError}
+            </div>
+          )}
+          <Input
+            label="Collection Name"
+            placeholder="Opened Tabs Collection"
+            value={openTabsCollectionForm.name}
+            onChange={(e) => setOpenTabsCollectionForm({ ...openTabsCollectionForm, name: e.target.value })}
+            required
+          />
+          <Textarea
+            label="Description (optional)"
+            placeholder="Bookmarks created from the browser's currently opened tabs"
+            value={openTabsCollectionForm.description}
+            onChange={(e) => setOpenTabsCollectionForm({ ...openTabsCollectionForm, description: e.target.value })}
+            rows={3}
+          />
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={openTabsCollectionForm.is_public}
+              onChange={(e) => setOpenTabsCollectionForm({ ...openTabsCollectionForm, is_public: e.target.checked })}
+              className="w-4 h-4 rounded"
+            />
+            <span className="text-sm" style={{ color: 'var(--text-primary)' }}>Make public (shareable)</span>
+          </label>
+          <div className="flex gap-3 pt-2">
+            <Button type="button" variant="secondary" onClick={resetOpenTabsCollectionFlow} className="flex-1">
+              Cancel
+            </Button>
+            <Button type="submit" disabled={openTabsActionLoading} className="flex-1">
+              {openTabsActionLoading ? 'Creating...' : 'Create Collection'}
+            </Button>
+          </div>
+        </form>
       </Modal>
     </DashboardLayout>
   )

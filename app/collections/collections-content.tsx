@@ -1,8 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { createBookmarkViaApi } from '@/lib/client-bookmark-api'
+import { updateCollectionViaApi, deleteCollectionViaApi } from '@/lib/client-collections-api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -37,6 +40,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   const [loading, setLoading] = useState(false) // Start with loading=false for instant render
   const [availableBookmarks, setAvailableBookmarks] = useState<Bookmark[]>([])
   const [isGuest, setIsGuest] = useState(false)
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [sortBy, setSortBy] = useState<'name' | 'date' | 'count'>('date')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
 
@@ -93,6 +97,30 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   // Visibility change confirmation state
   const [visibilityConfirmModalOpen, setVisibilityConfirmModalOpen] = useState(false)
   const [pendingVisibilityChange, setPendingVisibilityChange] = useState<{ collection: Collection; newStatus: boolean } | null>(null)
+  const refreshCollectionsTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  const getPrivateEditMessage = () => 'You are not allowed to make edits in this private collection. Ask the owner to make the collection public first.'
+
+  const showToastMessage = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), type === 'success' ? 2000 : 3000)
+  }
+
+  const getCollectionPermissions = (collection: Collection) => {
+    const role = collectionRoles[collection.id] || null
+    const isOwner = collection.user_id === currentUserId || role === 'owner'
+    const hasSharedAccess = role === 'editor' || role === 'viewer'
+    const canManageCollection = isOwner || (hasSharedAccess && role === 'editor' && collection.is_public)
+    const canViewCollection = isOwner || hasSharedAccess
+    const canToggleVisibility = isOwner
+
+    return {
+      isOwner,
+      canViewCollection,
+      canManageCollection,
+      canToggleVisibility,
+    }
+  }
 
   useEffect(() => {
     const fetchData = async () => {
@@ -102,6 +130,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       if (!user) {
         // Guest mode - load from localStorage
         setIsGuest(true)
+        setCurrentUserId(null)
         markGuestMode() // Mark user as guest mode
         try {
           const storedCollections = guestStoreGet<Collection[]>(GUEST_KEYS.COLLECTIONS)
@@ -144,6 +173,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       }
 
       // Check cache first for logged-in users
+      setCurrentUserId(user.id)
       const now = Date.now()
       if (collectionsCache.data && now - collectionsCache.timestamp < collectionsCache.CACHE_TTL) {
         setCollections(collectionsCache.data.collections)
@@ -345,6 +375,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   // Real-time subscription for bookmark collection changes
   useEffect(() => {
     if (isGuest) return
+    let active = true
 
     const refreshCollections = async () => {
       try {
@@ -355,6 +386,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       // Get current user
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
+      setCurrentUserId(user.id)
 
       // Fetch collections the user owns
       const { data: ownedCollections } = await supabase
@@ -463,37 +495,116 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       }
     }
 
-    const channel = supabase
-      .channel('bookmarks-collection-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*', // Listen to INSERT, UPDATE, DELETE
-          schema: 'public',
-          table: 'bookmarks'
-        },
-        () => {
-          refreshCollections()
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*', // Listen to INSERT, UPDATE, DELETE on junction table
-          schema: 'public',
-          table: 'collection_bookmarks'
-        },
-        () => {
-          refreshCollections()
-        }
-      )
-      .subscribe()
+    const scheduleRefreshCollections = (delay = 100) => {
+      if (refreshCollectionsTimeoutRef.current) return
+
+      refreshCollectionsTimeoutRef.current = setTimeout(() => {
+        refreshCollectionsTimeoutRef.current = null
+        refreshCollections()
+      }, delay)
+    }
+
+    let channel: RealtimeChannel | null = null
+
+    const setupRealtime = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user || !active) return
+
+      channel = supabase
+        .channel(`bookmarks-collection-changes-${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'bookmarks',
+            filter: `user_id=eq.${user.id}`
+          },
+          () => {
+            scheduleRefreshCollections()
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'collection_bookmarks'
+          },
+          () => {
+            scheduleRefreshCollections()
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'collections'
+          },
+          () => {
+            scheduleRefreshCollections()
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'shared_collections',
+            filter: `user_id=eq.${user.id}`
+          },
+          () => {
+            scheduleRefreshCollections()
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'removed_collections',
+            filter: `user_id=eq.${user.id}`
+          },
+          () => {
+            scheduleRefreshCollections()
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'removed_collection_bookmarks',
+            filter: `user_id=eq.${user.id}`
+          },
+          () => {
+            scheduleRefreshCollections()
+          }
+        )
+        .subscribe((status: string) => {
+          if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') && channel) {
+            setTimeout(() => {
+              channel?.subscribe()
+            }, 3000)
+          }
+        })
+    }
+
+    setupRealtime()
 
     // Polling as backup - refresh every 30 seconds for reliable updates across all users
     const pollInterval = setInterval(refreshCollections, 30000)
 
     return () => {
-      supabase.removeChannel(channel)
+      active = false
+      if (refreshCollectionsTimeoutRef.current) {
+        clearTimeout(refreshCollectionsTimeoutRef.current)
+        refreshCollectionsTimeoutRef.current = null
+      }
+      if (channel) {
+        supabase.removeChannel(channel)
+      }
       clearInterval(pollInterval)
     }
   }, [isGuest])
@@ -597,7 +708,14 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       return
     }
 
-    await supabase.from('collections').delete().eq('id', id)
+    try {
+      await deleteCollectionViaApi(id)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete collection'
+      showToastMessage(message, 'error')
+      setActionLoading(false)
+      return
+    }
 
     // Invalidate cache
     collectionsCache.data = null
@@ -610,6 +728,11 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   }
 
   const openDeleteModal = (collection: Collection) => {
+    const { canManageCollection } = getCollectionPermissions(collection)
+    if (!canManageCollection) {
+      showToastMessage(getPrivateEditMessage(), 'error')
+      return
+    }
     setCollectionToDelete(collection)
     setDeleteModalOpen(true)
   }
@@ -623,6 +746,11 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       } catch (e) { if (process.env.NODE_ENV === 'development') console.error('Error saving to localStorage:', e) }
       return
     }
+    const { canToggleVisibility } = getCollectionPermissions(collection)
+    if (!canToggleVisibility) {
+      showToastMessage('Only the owner can change collection visibility.', 'error')
+      return
+    }
     // Show confirmation modal instead of directly toggling
     setPendingVisibilityChange({ collection, newStatus: !collection.is_public })
     setVisibilityConfirmModalOpen(true)
@@ -632,14 +760,18 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     if (!pendingVisibilityChange) return
 
     const { collection, newStatus } = pendingVisibilityChange
+    try {
+      const updatedCollection = await updateCollectionViaApi(collection.id, { is_public: newStatus })
 
-    await supabase.from('collections').update({ is_public: newStatus }).eq('id', collection.id)
+      // Invalidate cache
+      collectionsCache.data = null
+      collectionsCache.timestamp = 0
 
-    // Invalidate cache
-    collectionsCache.data = null
-    collectionsCache.timestamp = 0
-
-    setCollections(collections.map(c => c.id === collection.id ? { ...c, is_public: newStatus } : c))
+      setCollections(collections.map(c => c.id === collection.id ? updatedCollection : c))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update collection visibility'
+      showToastMessage(message, 'error')
+    }
 
     setVisibilityConfirmModalOpen(false)
     setPendingVisibilityChange(null)
@@ -651,6 +783,11 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   }
 
   const openEditModal = (collection: Collection) => {
+    const { canManageCollection } = getCollectionPermissions(collection)
+    if (!canManageCollection) {
+      showToastMessage(getPrivateEditMessage(), 'error')
+      return
+    }
     setEditingCollection(collection)
     setFormData({ name: collection.name, description: collection.description || '', is_public: collection.is_public })
     setEditModalOpen(true)
@@ -680,18 +817,13 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       return
     }
 
-    const { data } = await supabase
-      .from('collections')
-      .update({
+    try {
+      const data = await updateCollectionViaApi(editingCollection.id, {
         name: formData.name,
         description: formData.description || null,
         is_public: formData.is_public,
       })
-      .eq('id', editingCollection.id)
-      .select()
-      .single()
 
-    if (data) {
       // Invalidate cache
       collectionsCache.data = null
       collectionsCache.timestamp = 0
@@ -700,6 +832,9 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       setEditModalOpen(false)
       setEditingCollection(null)
       setFormData({ name: '', description: '', is_public: false })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update collection'
+      setErrorMessage(message)
     }
   }
 
@@ -832,6 +967,11 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   }
 
   const openMergeModal = (collection: Collection) => {
+    const { isOwner } = getCollectionPermissions(collection)
+    if (!isOwner) {
+      showToastMessage('Only the owner can merge collections.', 'error')
+      return
+    }
     setCollectionToMerge(collection)
     setMergeTargetCollectionId('')
     setMergeModalOpen(true)
@@ -919,6 +1059,15 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   }
 
   const addToCollection = async (bookmarkIds: Set<string>, collectionId: string) => {
+    const targetCollection = collections.find(collection => collection.id === collectionId)
+    if (targetCollection) {
+      const { canManageCollection } = getCollectionPermissions(targetCollection)
+      if (!canManageCollection) {
+        showToastMessage(getPrivateEditMessage(), 'error')
+        return
+      }
+    }
+
     if (isGuest) {
       // Update guest bookmarks in localStorage
       try {
@@ -988,6 +1137,12 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   const addNewBookmarkToCollection = async (collection: Collection) => {
     if (!pendingBookmark) return
 
+    const { canManageCollection } = getCollectionPermissions(collection)
+    if (!canManageCollection) {
+      showToastMessage(getPrivateEditMessage(), 'error')
+      return
+    }
+
     if (isGuest) {
       // Guest mode - create bookmark in localStorage
       try {
@@ -1036,44 +1191,20 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
-    // Check if bookmark already exists
-    const { data: existingBookmark } = await supabase
-      .from('bookmarks')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('url', pendingBookmark.url)
-      .single()
+    await createBookmarkViaApi({
+      url: pendingBookmark.url,
+      title: pendingBookmark.title || new URL(pendingBookmark.url).hostname,
+      collection_id: collection.id
+    })
 
-    if (existingBookmark) {
-      // Update existing bookmark to this collection
-      await supabase.from('bookmarks').update({ collection_id: collection.id }).eq('id', existingBookmark.id)
-      // Refresh collection bookmarks
-      const { data } = await supabase
-        .from('bookmarks')
-        .select('*')
-        .eq('collection_id', collection.id)
-        .order('created_at', { ascending: false })
-        .limit(3)
-      if (data) {
-        setCollectionBookmarks(prev => ({ ...prev, [collection.id]: data }))
-      }
-    } else {
-      // Create new bookmark in this collection
-      const { data } = await supabase.from('bookmarks').insert({
-        user_id: user.id,
-        url: pendingBookmark.url,
-        title: pendingBookmark.title || new URL(pendingBookmark.url).hostname,
-        collection_id: collection.id,
-        is_read: true,
-        is_favorite: false,
-      }).select().single()
-      // Refresh collection bookmarks
-      if (data) {
-        setCollectionBookmarks(prev => ({
-          ...prev,
-          [collection.id]: [data, ...(prev[collection.id] || [])].slice(0, 3)
-        }))
-      }
+    const { data } = await supabase
+      .from('bookmarks')
+      .select('*')
+      .eq('collection_id', collection.id)
+      .order('created_at', { ascending: false })
+      .limit(3)
+    if (data) {
+      setCollectionBookmarks(prev => ({ ...prev, [collection.id]: data }))
     }
 
     // Invalidate cache
@@ -1268,6 +1399,12 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   const createAndAddBookmark = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!selectedCollection || !newBookmarkUrl) return
+
+    const { canManageCollection } = getCollectionPermissions(selectedCollection)
+    if (!canManageCollection) {
+      showToastMessage(getPrivateEditMessage(), 'error')
+      return
+    }
 
     if (isGuest) {
       // Guest mode - create bookmark in localStorage
@@ -1511,12 +1648,11 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
           </CardContent>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredCollections.map(collection => {
             const bookmarks = collectionBookmarks[collection.id] || []
             const userRole = collectionRoles[collection.id] || 'owner' // Default to owner for own collections
-            const canEdit = userRole === 'owner' || userRole === 'editor'
-            const isOwner = collection.user_id === (typeof window !== 'undefined' && (window as typeof window & { currentUser?: { id: string } }).currentUser?.id) || userRole === 'owner'
+            const { isOwner, canManageCollection, canToggleVisibility } = getCollectionPermissions(collection)
 
             return (
               <Card
@@ -1542,10 +1678,10 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                           {/* Role badge */}
                           {!isOwner && (
                             <span className="text-xs px-2 py-0.5 rounded-full" style={{
-                              backgroundColor: userRole === 'editor' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(156, 163, 175, 0.2)',
-                              color: userRole === 'editor' ? '#15803d' : '#6b7280'
+                              backgroundColor: collection.is_public ? 'rgba(34, 197, 94, 0.2)' : 'rgba(156, 163, 175, 0.2)',
+                              color: collection.is_public ? '#15803d' : '#6b7280'
                             }}>
-                              {userRole === 'editor' ? '✏️ Can edit' : '👁️ View only'}
+                              {collection.is_public ? '✏️ Public collaborator' : '👁️ View only'}
                             </span>
                           )}
                         </div>
@@ -1589,7 +1725,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                         </div>
                       </div>
                       {/* Edit controls - only show for owners and editors */}
-                      {canEdit && (
+                      {canManageCollection && (
                         <div className="flex gap-1">
                           <button
                             onClick={(e) => { e.stopPropagation(); openEditModal(collection); }}
@@ -1615,18 +1751,20 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                               Duplicate
                             </span>
                           </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); openMergeModal(collection); }}
-                            className="group/btn relative p-1 transition-all duration-75 active:scale-90"
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <svg className="w-5 h-5 text-gray-400 group-hover/btn:text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14v6m-3-3h6M6 10h2a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v2a2 2 0 002 2zm10 0V6a2 2 0 00-2-2H6a2 2 0 00-2 2v2a2 2 0 002 2z" />
-                            </svg>
-                            <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 px-2 py-1 text-xs text-white rounded whitespace-nowrap opacity-0 transition-opacity duration-0 group-hover/btn:opacity-100 group-hover/btn:delay-300 pointer-events-none z-50" style={{ backgroundColor: '#1f2937' }}>
-                              Merge
-                            </span>
-                          </button>
+                          {isOwner && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openMergeModal(collection); }}
+                              className="group/btn relative p-1 transition-all duration-75 active:scale-90"
+                              style={{ cursor: 'pointer' }}
+                            >
+                              <svg className="w-5 h-5 text-gray-400 group-hover/btn:text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14v6m-3-3h6M6 10h2a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v2a2 2 0 002 2zm10 0V6a2 2 0 00-2-2H6a2 2 0 00-2 2v2a2 2 0 002 2z" />
+                              </svg>
+                              <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 px-2 py-1 text-xs text-white rounded whitespace-nowrap opacity-0 transition-opacity duration-0 group-hover/btn:opacity-100 group-hover/btn:delay-300 pointer-events-none z-50" style={{ backgroundColor: '#1f2937' }}>
+                                Merge
+                              </span>
+                            </button>
+                          )}
                           <button
                             onClick={(e) => { e.stopPropagation(); openDeleteModal(collection); }}
                             className="group/btn relative p-1 transition-all duration-75 active:scale-90"
@@ -1642,7 +1780,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                         </div>
                       )}
                       {/* Remove button - show for non-owners (shared collections) */}
-                      {!isOwner && (
+                      {!isOwner && !canManageCollection && (
                         <div className="flex gap-1">
                           <button
                             onClick={(e) => { e.stopPropagation(); removeCollectionFromView(collection); }}
@@ -1685,8 +1823,8 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                     </div>
                   </div>
 
-                  <div className="flex gap-2 mt-auto">
-                    {canEdit && (
+                    <div className="flex gap-2 mt-auto">
+                    {canToggleVisibility && (
                       <button
                         onClick={(e) => { e.stopPropagation(); togglePublic(collection); }}
                         className="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-75 active:scale-90"
@@ -1699,7 +1837,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                         {collection.is_public ? '🌐 Public' : '🔒 Private'}
                       </button>
                     )}
-                    {canEdit && (
+                    {canManageCollection && (
                       <Button
                         size="sm"
                         variant="secondary"
@@ -2172,8 +2310,12 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
               checked={formData.is_public}
               onChange={(e) => setFormData({ ...formData, is_public: e.target.checked })}
               className="w-4 h-4 rounded"
+              disabled={!editingCollection || !getCollectionPermissions(editingCollection).canToggleVisibility}
             />
-            <span className="text-sm text-gray-900 dark:text-gray-100">Make public (shareable)</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100">
+              Make public (shareable)
+              {editingCollection && !getCollectionPermissions(editingCollection).canToggleVisibility ? ' - only the owner can change this' : ''}
+            </span>
           </label>
           <div className="flex gap-3 pt-2">
             <Button type="button" variant="secondary" onClick={() => { setEditModalOpen(false); setErrorMessage(null); }} className="flex-1">

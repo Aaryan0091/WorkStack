@@ -7,6 +7,12 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY!
 
 // AI API timeout (in milliseconds)
 const AI_TIMEOUT = 10000
+const MIN_TAG_COUNT = 5
+const STOP_WORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'how',
+  'in', 'into', 'is', 'it', 'of', 'on', 'or', 'that', 'the', 'this', 'to',
+  'using', 'via', 'with', 'www'
+])
 
 // Custom error types for better error handling
 export class AiError extends Error {
@@ -20,22 +26,94 @@ export class AiError extends Error {
 }
 
 // Fallback tag generation based on URL/title when AI fails
-function generateFallbackTags(title: string, url: string): string[] {
-  const fallbackTags: string[] = []
+function normalizeTagName(tag: string): string | null {
+  const normalized = tag
+    .toLowerCase()
+    .trim()
+    .replace(/[_/]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/[^a-z0-9#+.\- ]/g, '')
+    .trim()
 
-  // Extract domain as a tag
-  try {
-    const hostname = new URL(url).hostname.replace('www.', '')
-    const domainParts = hostname.split('.')
-    if (domainParts.length >= 2) {
-      // Add the main domain (e.g., "github", "stackoverflow")
-      fallbackTags.push(domainParts[domainParts.length - 2])
-    }
-  } catch {
-    // Invalid URL, skip domain extraction
+  if (!normalized || STOP_WORDS.has(normalized)) {
+    return null
   }
 
-  // Extract common programming languages/technologies from title
+  if (normalized.length < 2 && !['c', 'r'].includes(normalized)) {
+    return null
+  }
+
+  return normalized
+}
+
+function dedupeTags(
+  tags: string[],
+  blockedTags: Set<string> = new Set(),
+  limit = Number.POSITIVE_INFINITY
+): string[] {
+  const unique: string[] = []
+  const seen = new Set(blockedTags)
+
+  for (const tag of tags) {
+    const normalized = normalizeTagName(tag)
+    if (!normalized || seen.has(normalized)) continue
+
+    seen.add(normalized)
+    unique.push(normalized)
+
+    if (unique.length >= limit) break
+  }
+
+  return unique
+}
+
+function extractWordCandidates(text: string): string[] {
+  const matches = text.toLowerCase().match(/[a-z0-9#+.-]+/g) || []
+
+  return matches.filter((word) => {
+    if (word.length < 3) return false
+    if (/^\d+$/.test(word)) return false
+    if (STOP_WORDS.has(word)) return false
+    return true
+  })
+}
+
+function buildDeterministicTagCandidates(title: string, url: string, description: string): string[] {
+  const candidates: string[] = []
+  const combinedText = `${title} ${description}`.trim()
+  const textLower = combinedText.toLowerCase()
+
+  // Extract domain and URL path details so fallback tags stay grounded in bookmark data.
+  try {
+    const parsedUrl = new URL(url)
+    const hostname = parsedUrl.hostname.replace(/^www\./, '')
+    const hostParts = hostname.split('.').filter(Boolean)
+    const domainRoot = hostParts.length >= 2 ? hostParts[hostParts.length - 2] : hostParts[0]
+
+    if (domainRoot) {
+      candidates.push(domainRoot)
+    }
+
+    const hostTokens = hostParts.flatMap((part) => part.split(/[^a-z0-9#+.-]+/i))
+    candidates.push(...hostTokens)
+
+    const pathTokens = parsedUrl.pathname
+      .split('/')
+      .flatMap((segment) => segment.split(/[^a-z0-9#+.-]+/i))
+      .filter(Boolean)
+
+    if (pathTokens.length > 0) {
+      candidates.push(...pathTokens)
+      candidates.push('webpage')
+    } else {
+      candidates.push('homepage')
+    }
+
+    candidates.push('website')
+  } catch {
+    candidates.push('website', 'resource')
+  }
+
   const techKeywords = [
     'javascript', 'typescript', 'python', 'java', 'rust', 'go', 'php', 'ruby',
     'react', 'vue', 'angular', 'svelte', 'next', 'nuxt',
@@ -47,26 +125,59 @@ function generateFallbackTags(title: string, url: string): string[] {
     'git', 'github', 'gitlab', 'bitbucket',
     'linux', 'windows', 'macos', 'android', 'ios',
     'testing', 'jest', 'vitest', 'cypress', 'playwright',
-    'tutorial', 'guide', 'docs', 'reference', 'blog', 'article'
+    'tutorial', 'guide', 'docs', 'documentation', 'reference', 'blog', 'article'
   ]
 
-  const titleLower = title.toLowerCase()
   for (const keyword of techKeywords) {
-    if (titleLower.includes(keyword) && !fallbackTags.includes(keyword)) {
-      fallbackTags.push(keyword)
-      if (fallbackTags.length >= 5) break
+    if (textLower.includes(keyword)) {
+      candidates.push(keyword === 'documentation' ? 'docs' : keyword)
     }
   }
 
-  // Add general category tags based on content clues
-  if (titleLower.includes('tutorial') || titleLower.includes('how to')) {
-    if (!fallbackTags.includes('tutorial')) fallbackTags.push('tutorial')
-  }
-  if (titleLower.includes('documentation') || titleLower.includes('docs')) {
-    if (!fallbackTags.includes('docs')) fallbackTags.push('docs')
+  if (textLower.includes('how to')) candidates.push('tutorial')
+  if (textLower.includes('documentation') || textLower.includes('docs')) candidates.push('docs')
+  if (textLower.includes('guide')) candidates.push('guide')
+  if (textLower.includes('blog')) candidates.push('blog')
+  if (textLower.includes('article')) candidates.push('article')
+
+  candidates.push(...extractWordCandidates(combinedText))
+
+  return dedupeTags(candidates, new Set(), 20)
+}
+
+function ensureExactTagSupply(
+  tags: string[],
+  title: string,
+  url: string,
+  description: string,
+  targetCount = MIN_TAG_COUNT,
+  blockedTags: Set<string> = new Set()
+): string[] {
+  const ensuredTags = dedupeTags(tags, blockedTags, targetCount)
+
+  if (ensuredTags.length >= targetCount) {
+    return ensuredTags
   }
 
-  return fallbackTags.slice(0, 5)
+  const supplementalTags = buildDeterministicTagCandidates(title, url, description)
+  for (const tag of supplementalTags) {
+    if (ensuredTags.length >= targetCount) break
+    if (blockedTags.has(tag) || ensuredTags.includes(tag)) continue
+    ensuredTags.push(tag)
+  }
+
+  const lastResortTags = dedupeTags(['website', 'webpage', 'resource', 'reference', 'link'], blockedTags)
+  for (const tag of lastResortTags) {
+    if (ensuredTags.length >= targetCount) break
+    if (ensuredTags.includes(tag)) continue
+    ensuredTags.push(tag)
+  }
+
+  return ensuredTags
+}
+
+function generateFallbackTags(title: string, url: string, description = ''): string[] {
+  return ensureExactTagSupply([], title, url, description)
 }
 
 // Color palette for auto-generated tags
@@ -206,7 +317,7 @@ export async function generateAItags(
     timeout: AI_TIMEOUT,
   })
 
-  const prompt = `You are a bookmark tagging assistant. Given a bookmark's title, URL, and description, suggest 3-5 relevant tags.
+  const prompt = `You are a bookmark tagging assistant. Given a bookmark's title, URL, and description, suggest exactly 5 relevant tags.
 
 Bookmark Details:
 Title: ${title}
@@ -223,7 +334,7 @@ Guidelines for tag suggestions:
 7. For products/brands, include both category and specific name
 
 Output Format:
-Return ONLY a valid JSON object with a "tags" array containing the suggested tag strings.
+Return ONLY a valid JSON object with a "tags" array containing exactly 5 suggested tag strings.
 
 Example:
 {
@@ -244,7 +355,7 @@ Now generate tags for the given bookmark.`
     const content = response.choices[0]?.message?.content
     if (!content) {
       console.warn('[AI] Empty response from Groq API')
-      return useFallback ? generateFallbackTags(title, url) : []
+      return useFallback ? generateFallbackTags(title, url, description) : []
     }
 
     const parsed = JSON.parse(content)
@@ -252,36 +363,36 @@ Now generate tags for the given bookmark.`
 
     if (tags.length === 0) {
       console.warn('[AI] No tags returned from Groq API')
-      return useFallback ? generateFallbackTags(title, url) : []
+      return useFallback ? generateFallbackTags(title, url, description) : []
     }
 
-    return tags
+    return ensureExactTagSupply(tags, title, url, description)
   } catch (error: unknown) {
     // Handle different error types
     const err = error as { code?: string; message?: string; status?: number }
     if (err.code === 'ETIMEDOUT' || err.message?.includes('timeout')) {
       console.error('[AI] Request timeout:', err.message)
-      return useFallback ? generateFallbackTags(title, url) : []
+      return useFallback ? generateFallbackTags(title, url, description) : []
     }
 
     if (err.status === 429) {
       console.error('[AI] Rate limit exceeded')
-      return useFallback ? generateFallbackTags(title, url) : []
+      return useFallback ? generateFallbackTags(title, url, description) : []
     }
 
     if (err.status && err.status >= 500) {
       console.error('[AI] Server error:', err.message)
-      return useFallback ? generateFallbackTags(title, url) : []
+      return useFallback ? generateFallbackTags(title, url, description) : []
     }
 
     if (error instanceof SyntaxError) {
       console.error('[AI] Invalid JSON response:', error.message)
-      return useFallback ? generateFallbackTags(title, url) : []
+      return useFallback ? generateFallbackTags(title, url, description) : []
     }
 
     // Log unknown errors
     console.error('[AI] Unexpected error:', error)
-    return useFallback ? generateFallbackTags(title, url) : []
+    return useFallback ? generateFallbackTags(title, url, description) : []
   }
 }
 
@@ -296,9 +407,32 @@ export async function applyAiTagsToBookmark(
   const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
   try {
-    // 1. Generate AI tags
-    const aiTags = await generateAItags(title, url, description)
-    if (aiTags.length === 0) return []
+    const { data: existingBookmarkTags, error: fetchBookmarkTagsError } = await supabase
+      .from('bookmark_tags')
+      .select('tag_id, tags(name, color)')
+      .eq('bookmark_id', bookmarkId)
+
+    if (fetchBookmarkTagsError) {
+      console.error('[AI Tags] Failed to fetch current bookmark tags:', fetchBookmarkTagsError)
+    }
+
+    const assignedTagIds = new Set(
+      (existingBookmarkTags || []).map((bookmarkTag) => bookmarkTag.tag_id)
+    )
+    const assignedTagNames = new Set(
+      (existingBookmarkTags || [])
+        .map((bookmarkTag) => normalizeTagName((bookmarkTag.tags as { name?: string } | null)?.name || ''))
+        .filter((tagName): tagName is string => Boolean(tagName))
+    )
+
+    // Auto-tagging is meant to seed the bookmark once. Manual tags can exceed 5 later.
+    if (assignedTagIds.size >= MIN_TAG_COUNT) {
+      return []
+    }
+
+    // 1. Generate exactly the initial AI tag set. Manual tags can push the total above 5 later.
+    const initialAiTags = await generateAItags(title, url, description)
+    if (initialAiTags.length === 0) return []
 
     // 2. Fetch user's existing tags
     const { data: existingTags, error: fetchTagsError } = await supabase
@@ -311,8 +445,18 @@ export async function applyAiTagsToBookmark(
       return [] // Return early if we can't fetch existing tags
     }
 
-    // 3. Perform fuzzy matching
-    const { matched, newTags } = fuzzyMatchTags(aiTags, existingTags || [])
+    const aiTags = ensureExactTagSupply(
+      initialAiTags,
+      title,
+      url,
+      description,
+      MIN_TAG_COUNT,
+      assignedTagNames
+    )
+
+    // 3. Perform fuzzy matching against tags that are not already attached to the bookmark.
+    const availableTags = (existingTags || []).filter((tag) => !assignedTagIds.has(tag.id))
+    const { matched, newTags } = fuzzyMatchTags(aiTags, availableTags)
 
     // 4. Create new tags with error handling
     const createdTags: Tag[] = []

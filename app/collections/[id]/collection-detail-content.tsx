@@ -4,12 +4,13 @@ import { useState, useEffect, useRef } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { updateCollectionViaApi, deleteCollectionViaApi } from '@/lib/client-collections-api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/input'
-import type { Bookmark, Collection } from '@/lib/types'
+import type { Bookmark, Collection, CollectionRole } from '@/lib/types'
 import {
   guestStoreGet,
   GUEST_KEYS,
@@ -29,9 +30,11 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const [collection, setCollection] = useState<Collection | null>(null)
   const [bookmarks, setBookmarks] = useState<CollectionBookmark[]>([])
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [sharedRole, setSharedRole] = useState<CollectionRole | null>(null)
   const [userNames, setUserNames] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
+  const [permissionMessage, setPermissionMessage] = useState<string | null>(null)
   const [addModalOpen, setAddModalOpen] = useState(false)
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [editModalOpen, setEditModalOpen] = useState(false)
@@ -54,12 +57,34 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const channelRef = useRef<RealtimeChannel | null>(null)
   // Track if we've set up the subscription yet
   const subscriptionReady = useRef(false)
-  // Track if we've seen the first subscription callback (which fires on subscribe)
-  const firstCallbackSeen = useRef(false)
   // Track initial data fetch completion
   const initialFetchComplete = useRef(false)
   // Track current bookmark count via ref to avoid stale closure in safeguard
   const bookmarksCountRef = useRef(0)
+  const bookmarkIdsRef = useRef<Set<string>>(new Set())
+  const refreshDataTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  const getPrivateEditMessage = () => 'You are not allowed to make edits in this private collection. Ask the owner to make the collection public first.'
+
+  const getCollectionPermissions = (targetCollection: Collection | null) => {
+    if (!targetCollection) {
+      return {
+        isOwner: false,
+        canViewCollection: false,
+        canManageCollection: false,
+        canToggleVisibility: false,
+      }
+    }
+
+    const isOwner = targetCollection.user_id === currentUserId || sharedRole === 'owner'
+    const hasSharedAccess = sharedRole === 'editor' || sharedRole === 'viewer' || sharedRole === 'owner'
+    return {
+      isOwner,
+      canViewCollection: isOwner || hasSharedAccess,
+      canManageCollection: isOwner || (sharedRole === 'editor' && targetCollection.is_public),
+      canToggleVisibility: isOwner,
+    }
+  }
 
   useEffect(() => {
     // Initial data fetch
@@ -72,8 +97,12 @@ export function CollectionDetailContent({ collectionId }: Props) {
         channelRef.current = null
       }
       subscriptionReady.current = false
-      firstCallbackSeen.current = false
       initialFetchComplete.current = false
+      bookmarkIdsRef.current = new Set()
+      if (refreshDataTimeoutRef.current) {
+        clearTimeout(refreshDataTimeoutRef.current)
+        refreshDataTimeoutRef.current = null
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collectionId])
@@ -128,6 +157,12 @@ export function CollectionDetailContent({ collectionId }: Props) {
   }
 
   const addToCollection = async (bookmarkIds: Set<string>, collectionIdToAdd: string) => {
+    const { canManageCollection } = getCollectionPermissions(collection)
+    if (!canManageCollection) {
+      setPermissionMessage(getPrivateEditMessage())
+      return
+    }
+
     setActionLoading(true)
 
     // Get current user for added_by field
@@ -175,6 +210,12 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const createAndAddBookmark = async (e: React.FormEvent) => {
     e.preventDefault()
     setFormError('')
+
+    const { canManageCollection } = getCollectionPermissions(collection)
+    if (!canManageCollection) {
+      setPermissionMessage(getPrivateEditMessage())
+      return
+    }
 
     if (!newBookmarkUrl.trim()) {
       setFormError('URL is required')
@@ -263,6 +304,15 @@ export function CollectionDetailContent({ collectionId }: Props) {
     }
   }
 
+  const scheduleFetchData = (delay = 100) => {
+    if (refreshDataTimeoutRef.current) return
+
+    refreshDataTimeoutRef.current = setTimeout(() => {
+      refreshDataTimeoutRef.current = null
+      fetchData()
+    }, delay)
+  }
+
   const fetchData = async () => {
     if (process.env.NODE_ENV === 'development') console.log('[fetchData] Starting fetch...')
     try {
@@ -272,6 +322,8 @@ export function CollectionDetailContent({ collectionId }: Props) {
     // Guest mode handling - load from localStorage
     if (!user) {
       markGuestMode()
+      setCurrentUserId(null)
+      setSharedRole(null)
       try {
         const storedCollections = guestStoreGet<Collection[]>(GUEST_KEYS.COLLECTIONS)
         const storedBookmarks = guestStoreGet<Bookmark[]>(GUEST_KEYS.BOOKMARKS)
@@ -302,9 +354,44 @@ export function CollectionDetailContent({ collectionId }: Props) {
     if (process.env.NODE_ENV === 'development') console.log('[fetchData] Logged in user:', user.id)
     setCurrentUserId(user.id)
 
-    // Fetch collection and bookmarks in parallel (junction table + direct collection_id for backwards compatibility)
-    const [collectionRes, junctionRes, directRes] = await Promise.all([
+    const [collectionRes, sharedAccessRes] = await Promise.all([
       supabase.from('collections').select('*').eq('id', collectionId).single(),
+      supabase
+        .from('shared_collections')
+        .select('role')
+        .eq('collection_id', collectionId)
+        .eq('user_id', user.id)
+        .maybeSingle()
+    ])
+
+    const newCollection = collectionRes.data
+    const nextSharedRole = (sharedAccessRes.data?.role as CollectionRole | undefined) || null
+    setSharedRole(nextSharedRole)
+
+    if (!newCollection) {
+      setCollection(null)
+      bookmarkIdsRef.current = new Set()
+      bookmarksCountRef.current = 0
+      setBookmarks([])
+      setLoading(false)
+      return
+    }
+
+    const isOwner = newCollection.user_id === user.id || nextSharedRole === 'owner'
+    const hasSharedAccess = nextSharedRole === 'editor' || nextSharedRole === 'viewer' || nextSharedRole === 'owner'
+
+    if (!isOwner && !hasSharedAccess) {
+      setCollection(null)
+      bookmarkIdsRef.current = new Set()
+      bookmarksCountRef.current = 0
+      setBookmarks([])
+      setLoading(false)
+      router.push('/collections')
+      return
+    }
+
+    // Fetch bookmarks after access is confirmed
+    const [junctionRes, directRes] = await Promise.all([
       supabase
         .from('collection_bookmarks')
         .select('bookmark_id, bookmarks(*), added_by')
@@ -315,8 +402,6 @@ export function CollectionDetailContent({ collectionId }: Props) {
         .select('*')
         .eq('collection_id', collectionId)
     ])
-
-    const newCollection = collectionRes.data
 
     // Extract bookmarks from junction table result with added_by info
     let newBookmarks: CollectionBookmark[] = []
@@ -390,14 +475,20 @@ export function CollectionDetailContent({ collectionId }: Props) {
       }
     }
 
-    if (newCollection) {
-      setCollection(newCollection)
+    setCollection(newCollection || null)
+    if (!newCollection) {
+      bookmarkIdsRef.current = new Set()
+      bookmarksCountRef.current = 0
+      setBookmarks([])
+      setLoading(false)
+      return
     }
+
+    bookmarkIdsRef.current = new Set(newBookmarks.map((bookmark) => bookmark.id))
 
     if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] About to set bookmarks:', newBookmarks.length)
     if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] Current bookmarks in state:', bookmarks.length)
     if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] initialFetchComplete:', initialFetchComplete.current)
-    console.trace('[setBookmarks] Stack trace:')
 
     // Mark that a fetch has completed (before the safeguard check)
     const isFirstFetch = !initialFetchComplete.current
@@ -418,40 +509,95 @@ export function CollectionDetailContent({ collectionId }: Props) {
     if (process.env.NODE_ENV === 'development') console.log('[fetchData] Fetch complete, bookmarks:', newBookmarks.length, 'isFirstFetch:', isFirstFetch)
 
     // Set up real-time subscription AFTER initial data is loaded (only once)
-    // This prevents race condition where subscription callback fires before initial data loads
     if (!subscriptionReady.current && user) {
       subscriptionReady.current = true
       if (process.env.NODE_ENV === 'development') console.log('[fetchData] Setting up subscription...')
 
-      // Small delay to ensure initial render completes before subscription starts
-      setTimeout(() => {
-        const channel = supabase
-          .channel('collection_bookmarks_changes_' + collectionId)
-          .on(
-            'postgres_changes',
-            {
-              event: '*',
-              schema: 'public',
-              table: 'collection_bookmarks',
-              filter: `collection_id=eq.${collectionId}`
-            },
-            () => {
-              if (process.env.NODE_ENV === 'development') console.log('[subscription] Callback fired, firstCallbackSeen:', firstCallbackSeen.current)
-              // Ignore the first callback that fires when subscribing
-              if (!firstCallbackSeen.current) {
-                firstCallbackSeen.current = true
-                if (process.env.NODE_ENV === 'development') console.log('[subscription] Ignoring first callback')
-                return
-              }
-              if (process.env.NODE_ENV === 'development') console.log('[subscription] Processing real change, fetching data...')
-              fetchData()
+      const channel = supabase
+        .channel('collection-detail-changes_' + collectionId)
+        .on(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'postgres_changes' as any,
+          {
+            event: '*',
+            schema: 'public',
+            table: 'collection_bookmarks',
+            filter: `collection_id=eq.${collectionId}`
+          },
+          () => {
+            scheduleFetchData()
+          }
+        )
+        .on(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'postgres_changes' as any,
+          {
+            event: '*',
+            schema: 'public',
+            table: 'collections',
+            filter: `id=eq.${collectionId}`
+          },
+          () => {
+            scheduleFetchData()
+          }
+        )
+        .on(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'postgres_changes' as any,
+          {
+            event: '*',
+            schema: 'public',
+            table: 'shared_collections',
+            filter: `collection_id=eq.${collectionId}`
+          },
+          () => {
+            scheduleFetchData()
+          }
+        )
+        .on(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'postgres_changes' as any,
+          {
+            event: '*',
+            schema: 'public',
+            table: 'removed_collection_bookmarks',
+            filter: `collection_id=eq.${collectionId}`
+          },
+          () => {
+            scheduleFetchData()
+          }
+        )
+        .on(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'postgres_changes' as any,
+          {
+            event: '*',
+            schema: 'public',
+            table: 'bookmarks'
+          },
+          (payload: { new?: Bookmark; old?: Bookmark }) => {
+            const bookmarkId = payload.new?.id || payload.old?.id
+            const collectionMatch = payload.new?.collection_id === collectionId || payload.old?.collection_id === collectionId
+            if (bookmarkId && bookmarkIdsRef.current.has(bookmarkId)) {
+              scheduleFetchData()
+              return
             }
-          )
-          .subscribe()
 
-        channelRef.current = channel
-        if (process.env.NODE_ENV === 'development') console.log('[fetchData] Subscription created')
-      }, 100)
+            if (collectionMatch) {
+              scheduleFetchData()
+            }
+          }
+        )
+        .subscribe((status: string) => {
+          if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') && channelRef.current) {
+            setTimeout(() => {
+              channelRef.current?.subscribe()
+            }, 3000)
+          }
+        })
+
+      channelRef.current = channel
+      if (process.env.NODE_ENV === 'development') console.log('[fetchData] Subscription created')
     }
     } catch (err) {
       // Handle transient network errors during fetch/refresh
@@ -466,6 +612,12 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const addBookmark = async (e: React.FormEvent) => {
     e.preventDefault()
     setFormError('')
+
+    const { canManageCollection } = getCollectionPermissions(collection)
+    if (!canManageCollection) {
+      setPermissionMessage(getPrivateEditMessage())
+      return
+    }
 
     if (!formData.url.trim()) {
       setFormError('URL is required')
@@ -590,11 +742,10 @@ export function CollectionDetailContent({ collectionId }: Props) {
       setCurrentUserId(user.id)
     }
 
-    // Check if user is owner
-    const isOwner = collection?.user_id === userId
+    const { canManageCollection } = getCollectionPermissions(collection)
 
-    if (isOwner) {
-      // Owner: delete from collection_bookmarks junction table
+    if (canManageCollection) {
+      // Editors remove bookmarks from the shared collection for everyone.
       await supabase
         .from('collection_bookmarks')
         .delete()
@@ -653,6 +804,11 @@ export function CollectionDetailContent({ collectionId }: Props) {
   }
 
   const openDeleteModal = () => {
+    const { canManageCollection } = getCollectionPermissions(collection)
+    if (!canManageCollection) {
+      setPermissionMessage(getPrivateEditMessage())
+      return
+    }
     setDeleteModalOpen(true)
   }
 
@@ -660,14 +816,26 @@ export function CollectionDetailContent({ collectionId }: Props) {
     if (!collection) return
 
     setActionLoading(true)
-    await supabase.from('collections').delete().eq('id', collection.id)
-    setDeleteModalOpen(false)
-    setActionLoading(false)
-    router.push('/collections')
+    try {
+      await deleteCollectionViaApi(collection.id)
+      setDeleteModalOpen(false)
+      router.push('/collections')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete collection'
+      setPermissionMessage(message)
+    } finally {
+      setActionLoading(false)
+    }
   }
 
   const togglePublic = () => {
     if (!collection) return
+
+    const { canToggleVisibility } = getCollectionPermissions(collection)
+    if (!canToggleVisibility) {
+      setPermissionMessage('Only the owner can change collection visibility.')
+      return
+    }
 
     // Show confirmation modal instead of directly toggling
     const newStatus = !collection.is_public
@@ -677,6 +845,11 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
   const openEditModal = () => {
     if (!collection) return
+    const { canManageCollection } = getCollectionPermissions(collection)
+    if (!canManageCollection) {
+      setPermissionMessage(getPrivateEditMessage())
+      return
+    }
     setEditFormData({
       name: collection.name,
       description: collection.description || '',
@@ -706,22 +879,20 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const performUpdate = async (fromEditModal = false) => {
     if (!collection) return
 
-    const { data } = await supabase
-      .from('collections')
-      .update({
+    try {
+      const data = await updateCollectionViaApi(collection.id, {
         name: fromEditModal ? editFormData.name : collection.name,
         description: fromEditModal ? (editFormData.description || null) : collection.description,
         is_public: pendingVisibilityChange ?? collection.is_public,
       })
-      .eq('id', collection.id)
-      .select()
-      .single()
 
-    if (data) {
       setCollection(data)
       if (fromEditModal) {
         setEditModalOpen(false)
       }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update collection'
+      setPermissionMessage(message)
     }
     setVisibilityConfirmModalOpen(false)
     setPendingVisibilityChange(null)
@@ -845,11 +1016,10 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
     setActionLoading(true)
 
-    // Check if user is owner
-    const isOwner = collection?.user_id === currentUserId
+    const { canManageCollection } = getCollectionPermissions(collection)
 
-    if (isOwner) {
-      // Owner: delete from collection_bookmarks junction table and clear direct collection_id
+    if (canManageCollection) {
+      // Editors remove bookmarks from the shared collection for everyone.
       for (const bookmarkId of selectedBookmarkIds) {
         await supabase
           .from('collection_bookmarks')
@@ -931,6 +1101,8 @@ export function CollectionDetailContent({ collectionId }: Props) {
     ))
   }
 
+  const { canManageCollection, canToggleVisibility } = getCollectionPermissions(collection)
+
   if (loading) {
     return null // Suspense will show the loader
   }
@@ -975,21 +1147,27 @@ export function CollectionDetailContent({ collectionId }: Props) {
             )}
             {!selectionMode && (
               <>
-                <Button onClick={() => setAddModalOpen(true)}>+ Add Bookmark</Button>
-                <Button
-                  variant="secondary"
-                  onClick={openEditModal}
-                >
-                  Edit Collection
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={openDeleteModal}
-                  disabled={actionLoading}
-                  style={{ backgroundColor: '#fecaca', color: '#dc2626' }}
-                >
-                  Delete Collection
-                </Button>
+                {canManageCollection && (
+                  <Button onClick={() => { setPermissionMessage(null); setAddModalOpen(true) }}>+ Add Bookmark</Button>
+                )}
+                {canManageCollection && (
+                  <Button
+                    variant="secondary"
+                    onClick={openEditModal}
+                  >
+                    Edit Collection
+                  </Button>
+                )}
+                {canManageCollection && (
+                  <Button
+                    variant="secondary"
+                    onClick={openDeleteModal}
+                    disabled={actionLoading}
+                    style={{ backgroundColor: '#fecaca', color: '#dc2626' }}
+                  >
+                    Delete Collection
+                  </Button>
+                )}
               </>
             )}
           </div>
@@ -1003,12 +1181,26 @@ export function CollectionDetailContent({ collectionId }: Props) {
             </h1>
             <button
               onClick={togglePublic}
-              className={`px-2 py-1 rounded text-xs cursor-pointer hover:opacity-80 transition-opacity ${collection.is_public ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-700'}`}
-              title={`Click to make ${collection.is_public ? 'private' : 'public'}`}
+              disabled={!canToggleVisibility}
+              className={`px-2 py-1 rounded text-xs transition-opacity ${collection.is_public ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-700'}`}
+              title={canToggleVisibility ? `Click to make ${collection.is_public ? 'private' : 'public'}` : 'Only the owner can change visibility'}
+              style={{ cursor: canToggleVisibility ? 'pointer' : 'not-allowed', opacity: canToggleVisibility ? 1 : 0.7 }}
             >
               {collection.is_public ? '🌐 Public' : '🔒 Private'}
             </button>
           </div>
+
+          {!canManageCollection && (
+            <div className="mt-3 p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(251, 146, 60, 0.12)', color: '#c2410c', border: '1px solid rgba(251, 146, 60, 0.3)' }}>
+              You can view this private collection, but you are not allowed to make edits. Ask the owner to make the collection public first.
+            </div>
+          )}
+
+          {permissionMessage && (
+            <div className="mt-3 p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(220, 38, 38, 0.1)', color: '#dc2626', border: '1px solid rgba(220, 38, 38, 0.2)' }}>
+              {permissionMessage}
+            </div>
+          )}
 
           {/* Description and count */}
           <div className="text-sm mt-2" style={{ color: 'var(--text-secondary)' }}>
@@ -1019,7 +1211,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
               <p>
                 {bookmarks.length} bookmark{bookmarks.length !== 1 ? 's' : ''}
               </p>
-              {bookmarks.length > 0 && !selectionMode && (
+              {bookmarks.length > 0 && !selectionMode && canManageCollection && (
                 <Button variant="secondary" onClick={() => setSelectionMode(true)} className="text-sm py-1.5 px-3">
                   Select
                 </Button>
@@ -1081,9 +1273,11 @@ export function CollectionDetailContent({ collectionId }: Props) {
           <CardContent className="p-12 text-center" style={{ color: 'var(--text-secondary)' }}>
             No bookmarks in this collection yet.
             <br />
-            <Button onClick={() => setAddModalOpen(true)} className="mt-4">
-              + Add Your First Bookmark
-            </Button>
+            {canManageCollection && (
+              <Button onClick={() => { setPermissionMessage(null); setAddModalOpen(true) }} className="mt-4">
+                + Add Your First Bookmark
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : filteredBookmarks.length === 0 ? (
@@ -1532,8 +1726,12 @@ export function CollectionDetailContent({ collectionId }: Props) {
               checked={editFormData.is_public}
               onChange={(e) => setEditFormData({ ...editFormData, is_public: e.target.checked })}
               className="w-4 h-4 rounded"
+              disabled={!canToggleVisibility}
             />
-            <span className="text-sm text-gray-900 dark:text-gray-100">Make public (shareable)</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100">
+              Make public (shareable)
+              {!canToggleVisibility ? ' - only the owner can change this' : ''}
+            </span>
           </label>
           <div className="flex gap-3 pt-2">
             <Button type="button" variant="secondary" onClick={() => setEditModalOpen(false)} className="flex-1">

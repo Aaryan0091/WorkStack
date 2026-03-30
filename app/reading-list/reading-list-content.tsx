@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { Card, CardContent } from '@/components/ui/card'
 import { Modal } from '@/components/ui/modal'
@@ -75,6 +76,41 @@ export function ReadingListContent() {
   }, [showSuggestions])
 
   useEffect(() => {
+    let mounted = true
+    let channel: RealtimeChannel | null = null
+
+    const refreshReadingData = async (userId: string, includeSemantic = false) => {
+      // Fetch bookmarks that are in the reading list (is_read = false)
+      const { data: readingList } = await supabase
+        .from('bookmarks')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('is_read', false)
+        .order('created_at', { ascending: false })
+
+      if (mounted && readingList) {
+        setBookmarks(readingList)
+        setNeverOpened(readingList.filter(isOldNeverOpened))
+      }
+
+      // Fetch suggestions - bookmarks that are read but could be re-added (most recent)
+      const { data: readBookmarks } = await supabase
+        .from('bookmarks')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('is_read', true)
+        .order('created_at', { ascending: false })
+        .limit(6)
+
+      if (mounted && readBookmarks) {
+        setSuggestions(readBookmarks)
+      }
+
+      if (includeSemantic && mounted) {
+        await fetchSemanticRecommendations()
+      }
+    }
+
     const fetchData = async () => {
       // Check if user is logged in
       const { data: { user } } = await supabase.auth.getUser()
@@ -97,37 +133,38 @@ export function ReadingListContent() {
         return
       }
 
-      // Fetch bookmarks that are in the reading list (is_read = false)
-      const { data: readingList } = await supabase
-        .from('bookmarks')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('is_read', false)
-        .order('created_at', { ascending: false })
+      await refreshReadingData(user.id, true)
 
-      if (readingList) {
-        setBookmarks(readingList)
-        // Filter for never opened AND more than a week old
-        setNeverOpened(readingList.filter(isOldNeverOpened))
-      }
-
-      // Fetch suggestions - bookmarks that are read but could be re-added (most recent)
-      const { data: readBookmarks } = await supabase
-        .from('bookmarks')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('is_read', true)
-        .order('created_at', { ascending: false })
-        .limit(6)
-
-      if (readBookmarks) {
-        setSuggestions(readBookmarks)
-      }
-
-      // Fetch semantic recommendations
-      await fetchSemanticRecommendations()
+      channel = supabase
+        .channel(`reading-list-${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'bookmarks',
+            filter: `user_id=eq.${user.id}`
+          },
+          () => {
+            refreshReadingData(user.id)
+          }
+        )
+        .subscribe((status: string) => {
+          if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') && channel) {
+            setTimeout(() => {
+              channel?.subscribe()
+            }, 3000)
+          }
+        })
     }
     fetchData()
+
+    return () => {
+      mounted = false
+      if (channel) {
+        supabase.removeChannel(channel)
+      }
+    }
   }, [])
 
   const fetchSemanticRecommendations = async () => {

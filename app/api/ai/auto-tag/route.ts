@@ -7,7 +7,6 @@ import { ENV, corsHeaders, handleOptionsRequest } from '@/lib/api-response'
 const supabaseUrl = ENV.SUPABASE_URL
 const supabaseAnonKey = ENV.SUPABASE_ANON_KEY
 const supabaseServiceKey = ENV.SUPABASE_SERVICE_KEY
-const GROQ_API_KEY = ENV.GROQ_API_KEY
 export async function OPTIONS(request: NextRequest) {
   return handleOptionsRequest(request)
 }
@@ -33,16 +32,7 @@ async function getUserFromToken(authHeader: string | null) {
 // POST - Auto-tag a bookmark (runs in background)
 export async function POST(request: NextRequest) {
   try {
-    // 1. Check if AI is configured
-    if (!GROQ_API_KEY) {
-      const response = NextResponse.json(
-        { error: 'AI tagging is not configured' },
-        { status: 503 }
-      )
-      return corsHeaders(response, request)
-    }
-
-    // 2. Authenticate user
+    // 1. Authenticate user
     const authHeader = request.headers.get('Authorization')
     const user = await getUserFromToken(authHeader)
     if (!user) {
@@ -50,7 +40,7 @@ export async function POST(request: NextRequest) {
       return corsHeaders(response, request)
     }
 
-    // 3. Parse request body
+    // 2. Parse request body
     const body = await request.json()
     const { bookmark_id } = body
 
@@ -62,7 +52,7 @@ export async function POST(request: NextRequest) {
       return corsHeaders(response, request)
     }
 
-    // 4. Fetch the bookmark
+    // 3. Fetch the bookmark
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
     const { data: bookmark, error: fetchError } = await supabase
       .from('bookmarks')
@@ -79,7 +69,7 @@ export async function POST(request: NextRequest) {
       return corsHeaders(response, request)
     }
 
-    // 5. Apply AI tags (this creates tags and associates them)
+    // 4. Apply AI tags (this creates tags and associates them)
     const suggestions = await applyAiTagsToBookmark(
       user.id,
       bookmark_id,

@@ -42,46 +42,41 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { code } = body
 
-    if (!code) {
+    const rawCode = typeof code === 'string' ? code.trim() : ''
+
+    if (!rawCode) {
       const response = NextResponse.json({ error: 'Collection code is required' }, { status: 400 })
       return corsHeaders(response, request)
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
 
-    // Try to find the collection by share_code or id or share_slug
+    // Accept a public shared URL/slug for public collections, but do not allow raw internal IDs.
+    const sharedSlugMatch = rawCode.match(/\/shared\/([^\/\s]+)/)
+    const publicSlug = sharedSlugMatch?.[1] || rawCode
+
     let collection = null
 
-    // First try by share_code
+    // First try by share_code. This is the only way to add private collections.
     const { data: collectionByCode } = await supabase
       .from('collections')
       .select('*')
-      .eq('share_code', code)
+      .eq('share_code', rawCode)
       .single()
 
     if (collectionByCode) {
       collection = collectionByCode
     } else {
-      // Try by id
-      const { data: collectionById } = await supabase
+      // For convenience, allow adding public collections by public share slug or shared URL.
+      const { data: collectionBySlug } = await supabase
         .from('collections')
         .select('*')
-        .eq('id', code)
+        .eq('share_slug', publicSlug)
+        .eq('is_public', true)
         .single()
 
-      if (collectionById) {
-        collection = collectionById
-      } else {
-        // Try by share_slug
-        const { data: collectionBySlug } = await supabase
-          .from('collections')
-          .select('*')
-          .eq('share_slug', code)
-          .single()
-
-        if (collectionBySlug) {
-          collection = collectionBySlug
-        }
+      if (collectionBySlug) {
+        collection = collectionBySlug
       }
     }
 

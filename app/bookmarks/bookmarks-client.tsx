@@ -131,18 +131,6 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags: initialTags
           await supabase.from('bookmark_tags').insert({ bookmark_id: editingBookmark.id, tag_id: tagId })
         }
 
-        // Trigger AI auto-tagging for edited bookmark
-        fetch(`${window.location.origin}/api/ai/auto-tag`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
-          },
-          body: JSON.stringify({ bookmark_id: editingBookmark.id })
-        }).catch((err) => {
-          console.error('[Edit AI Tag] Failed:', err)
-        })
-
         closeModal()
       } else {
         // Check if URL already exists
@@ -165,18 +153,6 @@ export function BookmarksClient({ bookmarks: initialBookmarks, tags: initialTags
           for (const tagId of formData.tag_ids) {
             await supabase.from('bookmark_tags').insert({ bookmark_id: data[0].id, tag_id: tagId })
           }
-
-          // Trigger AI auto-tagging for newly created bookmark
-          fetch(`${window.location.origin}/api/ai/auto-tag`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
-            },
-            body: JSON.stringify({ bookmark_id: data[0].id })
-          }).catch((err) => {
-            console.error('[Manual AI Tag] Failed:', err)
-          })
         }
         closeModal()
       }

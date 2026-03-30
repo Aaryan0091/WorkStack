@@ -5,6 +5,7 @@ import { BookmarksList } from './bookmarks-list'
 import { BookmarksHeader } from './bookmarks-header'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Toast } from '@/components/ui/toast'
+import { createBookmarkViaApi } from '@/lib/client-bookmark-api'
 import { supabase } from '@/lib/supabase'
 import type { Bookmark, Tag } from '@/lib/types'
 import {
@@ -39,40 +40,27 @@ export default function BookmarksPage() {
     setImporting(true)
     let imported = 0
     let skipped = 0
-    const importedUrls: string[] = []
 
     for (const importedBookmark of data.bookmarks) {
-      // Check if URL already exists
-      const { data: existing } = await supabase
-        .from('bookmarks')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq('url', importedBookmark.url)
-        .single()
-
-      if (existing) {
-        skipped++
-        continue
-      }
-
-      // Track URL for AI tagging
-      importedUrls.push(importedBookmark.url)
-
-      // Create bookmark
-      const { error } = await supabase
-        .from('bookmarks')
-        .insert({
-          user_id: user.id,
+      try {
+        const result = await createBookmarkViaApi({
           url: importedBookmark.url,
           title: importedBookmark.title || importedBookmark.url,
           description: importedBookmark.description || null,
-          notes: importedBookmark.notes || null,
-          is_favorite: importedBookmark.is_favorite || false,
-          is_read: importedBookmark.is_read || false
+          notes: importedBookmark.notes || null
         })
 
-      if (!error) {
-        imported++
+        if (result.duplicate) {
+          skipped++
+          continue
+        }
+
+        if (result.bookmark) {
+          imported++
+        }
+      } catch (error) {
+        console.error('[Import Bookmark] Failed:', error)
+        skipped++
       }
     }
 
@@ -88,27 +76,6 @@ export default function BookmarksPage() {
     }
 
     setImporting(false)
-
-    // Trigger AI tagging for newly imported bookmarks
-    if (imported > 0 && bookmarksRes.data) {
-      const baseUrl = window.location.origin
-      const newBookmarks = bookmarksRes.data.filter(b => importedUrls.includes(b.url)) || []
-      await Promise.all(
-        newBookmarks.map(async (b) => {
-          fetch(`${baseUrl}/api/ai/auto-tag`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`
-            },
-            body: JSON.stringify({ bookmark_id: b.id })
-          }).catch((err) => {
-            console.error('[Import AI Tag] Failed:', err)
-          })
-        })
-      )
-    }
-
     // Show toast notification
     if (imported > 0 || skipped > 0) {
       setToast({

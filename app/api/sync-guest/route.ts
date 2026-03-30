@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { applyAiTagsToBookmark } from '@/lib/ai-tagging'
 
 // Guest data types (from localStorage, may not have all fields)
 interface GuestBookmark {
@@ -155,6 +156,18 @@ export async function POST(request: NextRequest) {
 
         if (newBookmark) {
           syncedBookmarks.push(newBookmark.id)
+
+          try {
+            await applyAiTagsToBookmark(
+              user.id,
+              newBookmark.id,
+              newBookmark.title,
+              newBookmark.url,
+              newBookmark.description || ''
+            )
+          } catch (taggingError) {
+            console.error('[Guest Sync] Auto-tagging failed:', taggingError)
+          }
         }
       }
     }
@@ -173,4 +186,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Sync failed' }, { status: 500 })
   }
 }
-

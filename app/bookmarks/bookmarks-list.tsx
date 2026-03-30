@@ -1,7 +1,9 @@
 'use client'
 
-import { useState, useMemo, memo, useEffect } from 'react'
+import { useState, useMemo, memo, useEffect, useRef } from 'react'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { createBookmarkViaApi } from '@/lib/client-bookmark-api'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -153,6 +155,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   const [bookmarks, setBookmarks] = useState(initialBookmarks)
   const [tags] = useState(initialTags)
   const [bookmarkTags, setBookmarkTags] = useState(initialBookmarkTags)
+  const bookmarkIdsRef = useRef<Set<string>>(new Set(initialBookmarks.map((bookmark) => bookmark.id)))
   const [searchQuery, setSearchQuery] = useState('')
   const [activeFilters, setActiveFilters] = useState<Set<'favorites' | 'reading-list'>>(new Set())
   const [modalOpen, setModalOpen] = useState(false)
@@ -163,6 +166,10 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   useEffect(() => {
     setBookmarks(initialBookmarks)
   }, [initialBookmarks])
+
+  useEffect(() => {
+    bookmarkIdsRef.current = new Set(bookmarks.map((bookmark) => bookmark.id))
+  }, [bookmarks])
 
   // Form state
   const [editingBookmark, setEditingBookmark] = useState<Bookmark | null>(null)
@@ -246,123 +253,125 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   useEffect(() => {
     if (isGuest) return
 
-    const timeoutIds: NodeJS.Timeout[] = []
+    let mounted = true
+    let channel: RealtimeChannel | null = null
 
-    const channel = supabase
-      .channel('bookmarks-realtime')
-      .on(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        'postgres_changes' as any,
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'bookmarks'
-        },
-        async (payload: { new: Bookmark; old?: Bookmark }) => {
-          if (process.env.NODE_ENV === 'development') {
-            console.log('Realtime INSERT:', payload.new)
-          }
-          const newBookmark = payload.new
+    const syncBookmarkTags = async (bookmarkId: string) => {
+      if (!bookmarkIdsRef.current.has(bookmarkId)) return
 
-          // Add bookmark to state
-          setBookmarks(prev => [newBookmark, ...prev])
+      try {
+        const { data: tagData } = await supabase
+          .from('bookmark_tags')
+          .select('tag_id, tags(*)')
+          .eq('bookmark_id', bookmarkId)
 
-          // Fetch tags for the new bookmark with cleanup tracking
-          const timeoutId = setTimeout(async () => {
-            try {
-              const { data: tagData } = await supabase
-                .from('bookmark_tags')
-                .select('tag_id, tags(*)')
-                .eq('bookmark_id', newBookmark.id)
+        if (!mounted) return
 
-              const fetchedTags = tagData?.flatMap((bt: BookmarkTagRow) => normalizeTags(bt.tags)) || []
-              if (process.env.NODE_ENV === 'development') {
-                console.log('Fetched tags for new bookmark:', fetchedTags)
-              }
-
-              setBookmarkTags(prev => ({
-                ...prev,
-                [newBookmark.id]: fetchedTags
-              }))
-            } catch (error) {
-              if (process.env.NODE_ENV === 'development') {
-                console.error('Failed to fetch tags for new bookmark:', error)
-              }
-            }
-          }, 500)
-
-          timeoutIds.push(timeoutId)
-        }
-      )
-      .on(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        'postgres_changes' as any,
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'bookmarks'
-        },
-        (payload: { new: Bookmark }) => {
-          if (process.env.NODE_ENV === 'development') {
-            console.log('Realtime UPDATE:', payload.new)
-          }
-          setBookmarks(prev => prev.map(b => b.id === payload.new.id ? payload.new : b))
-        }
-      )
-      .on(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        'postgres_changes' as any,
-        {
-          event: 'DELETE',
-          schema: 'public',
-          table: 'bookmarks'
-        },
-        (payload: { old: Bookmark }) => {
-          if (process.env.NODE_ENV === 'development') {
-            console.log('Realtime DELETE:', payload.old)
-          }
-          setBookmarks(prev => prev.filter(b => b.id !== payload.old.id))
-        }
-      )
-      .on(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        'postgres_changes' as any,
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'bookmark_tags'
-        },
-        async (payload: { new: { bookmark_id: string } }) => {
-          if (process.env.NODE_ENV === 'development') {
-            console.log('Realtime bookmark_tag INSERT:', payload.new)
-          }
-          const bookmarkId = payload.new.bookmark_id
-
-          // Fetch the tag details
-          const { data: tagData } = await supabase
-            .from('bookmark_tags')
-            .select('tag_id, tags(*)')
-            .eq('bookmark_id', bookmarkId)
-
-          const fetchedTags = tagData?.flatMap((bt: BookmarkTagRow) => normalizeTags(bt.tags)) || []
-
-          setBookmarkTags(prev => ({
-            ...prev,
-            [bookmarkId]: fetchedTags
-          }))
-        }
-      )
-      .subscribe((status: string) => {
+        const fetchedTags = tagData?.flatMap((bt: BookmarkTagRow) => normalizeTags(bt.tags)) || []
+        setBookmarkTags(prev => ({
+          ...prev,
+          [bookmarkId]: fetchedTags
+        }))
+      } catch (error) {
         if (process.env.NODE_ENV === 'development') {
-          console.log('Subscription status:', status)
+          console.error('Failed to sync bookmark tags:', error)
         }
-      })
+      }
+    }
+
+    const setupRealtime = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user || !mounted) return
+
+      channel = supabase
+        .channel(`bookmarks-realtime-${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'bookmarks',
+            filter: `user_id=eq.${user.id}`
+          },
+          async (payload: { new: Bookmark }) => {
+            if (!mounted) return
+            const newBookmark = payload.new
+
+            setBookmarks(prev => {
+              if (prev.some((bookmark) => bookmark.id === newBookmark.id)) {
+                return prev.map((bookmark) => bookmark.id === newBookmark.id ? newBookmark : bookmark)
+              }
+              return [newBookmark, ...prev]
+            })
+
+            await syncBookmarkTags(newBookmark.id)
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'bookmarks',
+            filter: `user_id=eq.${user.id}`
+          },
+          (payload: { new: Bookmark }) => {
+            if (!mounted) return
+            setBookmarks(prev => prev.map(b => b.id === payload.new.id ? payload.new : b))
+          }
+        )
+        .on(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          'postgres_changes' as any,
+          {
+            event: 'DELETE',
+            schema: 'public',
+            table: 'bookmarks',
+            filter: `user_id=eq.${user.id}`
+          },
+          (payload: { old: Bookmark }) => {
+            if (!mounted) return
+            setBookmarks(prev => prev.filter(b => b.id !== payload.old.id))
+            setBookmarkTags(prev => {
+              const next = { ...prev }
+              delete next[payload.old.id]
+              return next
+            })
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'bookmark_tags'
+          },
+          async (payload: { new?: { bookmark_id?: string }; old?: { bookmark_id?: string } }) => {
+            const bookmarkId = payload.new?.bookmark_id || payload.old?.bookmark_id
+            if (!bookmarkId) return
+            await syncBookmarkTags(bookmarkId)
+          }
+        )
+        .subscribe((status: string) => {
+          if (process.env.NODE_ENV === 'development') {
+            console.log('Bookmarks subscription status:', status)
+          }
+
+          if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') && channel) {
+            setTimeout(() => {
+              channel?.subscribe()
+            }, 3000)
+          }
+        })
+    }
+
+    setupRealtime()
 
     return () => {
-      // Clear all pending timeouts
-      timeoutIds.forEach(id => clearTimeout(id))
-      // Remove the Supabase channel
-      supabase.removeChannel(channel)
+      mounted = false
+      if (channel) {
+        supabase.removeChannel(channel)
+      }
     }
   }, [isGuest])
 
@@ -868,6 +877,7 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
           for (const tagId of selectedTagIds) {
             await supabase.from('bookmark_tags').insert({ bookmark_id: data.id, tag_id: tagId })
           }
+
         }
       }
       window.location.reload()
@@ -925,18 +935,17 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
       saveGuestBookmarks([...bookmarks, ...newBookmarks])
       setToast({ message: `Added ${newTabs.length} bookmark(s)`, type: 'success' })
     } else {
-      // Logged in - save to Supabase
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
+      for (const tab of newTabs) {
+        try {
+          await createBookmarkViaApi({
+            url: tab.url,
+            title: tab.title || new URL(tab.url).hostname
+          })
+        } catch (error) {
+          console.error('[Bulk Bookmark Add] Failed:', error)
+        }
+      }
 
-      // Insert all bookmarks
-      await supabase.from('bookmarks').insert(
-        newTabs.map(tab => ({
-          url: tab.url,
-          title: tab.title || new URL(tab.url).hostname,
-          user_id: user.id,
-        }))
-      )
       setToast({ message: `Added ${newTabs.length} bookmark(s)`, type: 'success' })
       setTimeout(() => window.location.reload(), 1000)
     }

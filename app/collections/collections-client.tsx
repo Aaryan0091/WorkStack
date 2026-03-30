@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { createBookmarkViaApi } from '@/lib/client-bookmark-api'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -102,34 +103,15 @@ export function CollectionsClient({ collections: initialCollections, bookmarks: 
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
-    // Check if bookmark already exists
-    const { data: existingBookmark } = await supabase
-      .from('bookmarks')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('url', pendingBookmark.url)
-      .single()
+    await createBookmarkViaApi({
+      url: pendingBookmark.url,
+      title: pendingBookmark.title || new URL(pendingBookmark.url).hostname,
+      collection_id: collection.id
+    })
 
-    if (existingBookmark) {
-      // Update existing bookmark to this collection
-      await supabase.from('bookmarks').update({ collection_id: collection.id }).eq('id', existingBookmark.id)
-      // Refresh bookmarks
-      const { data } = await supabase.from('bookmarks').select('*').order('title', { ascending: true })
-      if (data) setBookmarks(data)
-    } else {
-      // Create new bookmark in this collection
-      await supabase.from('bookmarks').insert({
-        user_id: user.id,
-        url: pendingBookmark.url,
-        title: pendingBookmark.title || new URL(pendingBookmark.url).hostname,
-        collection_id: collection.id,
-        is_read: false,
-        is_favorite: false,
-      })
-      // Refresh bookmarks
-      const { data } = await supabase.from('bookmarks').select('*').order('title', { ascending: true })
-      if (data) setBookmarks(data)
-    }
+    // Refresh bookmarks
+    const { data } = await supabase.from('bookmarks').select('*').order('title', { ascending: true })
+    if (data) setBookmarks(data)
 
     setSelectCollectionModalOpen(false)
     setPendingBookmark(null)
@@ -147,7 +129,7 @@ export function CollectionsClient({ collections: initialCollections, bookmarks: 
 
   const shareUrl = (collection: Collection) => {
     if (typeof window !== 'undefined') {
-      return `${window.location.origin}/share/${collection.share_slug}`
+      return `${window.location.origin}/shared/${collection.share_slug}`
     }
     return ''
   }

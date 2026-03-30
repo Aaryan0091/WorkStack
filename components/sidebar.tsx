@@ -4,7 +4,6 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import { useTheme } from 'next-themes'
 import { Modal } from '@/components/ui/modal'
 import {
   LayoutDashboard,
@@ -15,8 +14,7 @@ import {
   Sparkles,
   Tag,
   LogOut,
-  Sun,
-  Moon,
+  Menu,
 } from 'lucide-react'
 
 interface NavItem {
@@ -58,6 +56,32 @@ async function getCachedEmail(): Promise<string | null> {
 let mobileSidebarOpen = false
 const mobileSidebarListeners: Set<() => void> = new Set()
 
+// Desktop sidebar collapse state management
+let desktopSidebarCollapsed = false
+const desktopSidebarListeners: Set<(collapsed: boolean) => void> = new Set()
+
+export function toggleDesktopSidebar() {
+  desktopSidebarCollapsed = !desktopSidebarCollapsed
+  desktopSidebarListeners.forEach(listener => listener(desktopSidebarCollapsed))
+  localStorage.setItem('workstack_sidebar_collapsed', String(desktopSidebarCollapsed))
+}
+
+export function closeDesktopSidebar() {
+  desktopSidebarCollapsed = true
+  desktopSidebarListeners.forEach(listener => listener(true))
+  localStorage.setItem('workstack_sidebar_collapsed', String(true))
+}
+
+export function openDesktopSidebar() {
+  desktopSidebarCollapsed = false
+  desktopSidebarListeners.forEach(listener => listener(false))
+  localStorage.setItem('workstack_sidebar_collapsed', String(false))
+}
+
+export function getDesktopSidebarListeners() {
+  return desktopSidebarListeners
+}
+
 export function toggleMobileSidebar() {
   mobileSidebarOpen = !mobileSidebarOpen
   mobileSidebarListeners.forEach(listener => listener())
@@ -72,14 +96,19 @@ export function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
   const [email, setEmail] = useState('')
-  const { theme, setTheme } = useTheme()
-  const [mounted, setMounted] = useState(false)
   const [showLogoutModal, setShowLogoutModal] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [isMobileOpen, setIsMobileOpen] = useState(false)
+  const [isCollapsed, setIsCollapsed] = useState(false)
 
   useEffect(() => {
-    setMounted(true)
+    // Load collapsed state from localStorage
+    const savedCollapsed = localStorage.getItem('workstack_sidebar_collapsed')
+    if (savedCollapsed === 'true') {
+      desktopSidebarCollapsed = true
+      setIsCollapsed(true)
+    }
+
     // Use cached email to avoid repeated fetches
     getCachedEmail().then(e => {
       if (e) setEmail(e)
@@ -94,8 +123,13 @@ export function Sidebar() {
     const handleMobileToggle = () => setIsMobileOpen(mobileSidebarOpen)
     mobileSidebarListeners.add(handleMobileToggle)
 
+    // Listen for desktop sidebar collapse events
+    const handleDesktopCollapse = (collapsed: boolean) => setIsCollapsed(collapsed)
+    desktopSidebarListeners.add(handleDesktopCollapse)
+
     return () => {
       mobileSidebarListeners.delete(handleMobileToggle)
+      desktopSidebarListeners.delete(handleDesktopCollapse)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -122,43 +156,72 @@ export function Sidebar() {
         onClick={closeMobileSidebar}
       />
       <aside
-        className={`w-64 border-r h-screen fixed left-0 top-0 flex flex-col z-50 transition-transform duration-300 ${
+        className={`${isCollapsed ? 'w-20' : 'w-64'} h-screen fixed left-0 top-0 flex flex-col z-50 transition-all duration-300 sidebar-glass ${
           isMobileOpen ? 'translate-x-0' : '-translate-x-full'
         } md:translate-x-0`}
-        style={{
-          backgroundColor: 'var(--bg-primary)',
-          borderColor: 'var(--border-color)',
-          color: 'var(--text-primary)'
-        }}
       >
-      <div className="p-6 border-b" style={{ borderColor: 'var(--border-color)' }}>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{
-              background: 'linear-gradient(135deg, var(--color-primary) 0%, #8b5cf6 100%)',
-              boxShadow: '0 0 20px rgba(59, 130, 246, 0.3)'
-            }}>
-              <span className="text-sm font-bold text-white">W</span>
+      {isCollapsed ? (
+        <div className="p-6 border-b sidebar-border flex justify-center">
+          <button
+            type="button"
+            onClick={openDesktopSidebar}
+            className="p-2.5 rounded-xl transition-all duration-200 shrink-0 relative z-10"
+            style={{
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              background: 'transparent'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(var(--bg-secondary-rgb), 0.5)'
+              e.currentTarget.style.color = 'var(--text-primary)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent'
+              e.currentTarget.style.color = 'var(--text-secondary)'
+            }}
+            aria-label="Open sidebar"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+        </div>
+      ) : (
+        <div className="p-6 border-b sidebar-border">
+          <div className="flex items-center justify-between w-full shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{
+                background: 'linear-gradient(135deg, var(--color-primary) 0%, #8b5cf6 100%)',
+                boxShadow: '0 4px 16px rgba(59, 130, 246, 0.4)'
+              }}>
+                <span className="text-sm font-bold text-white">W</span>
+              </div>
+              <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
+                WorkStack
+              </h1>
             </div>
-            <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
-              WorkStack
-            </h1>
-          </div>
-          {mounted && (
             <button
-              onClick={() => setTheme(theme === 'dark' || theme === undefined ? 'light' : 'dark')}
-              className="p-2 rounded-lg transition-colors"
+              type="button"
+              onClick={toggleDesktopSidebar}
+              className="p-2.5 rounded-xl transition-all duration-200 shrink-0"
               style={{
                 color: 'var(--text-secondary)',
-                cursor: 'pointer'
+                cursor: 'pointer',
+                background: 'transparent'
               }}
-              aria-label="Toggle theme"
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(var(--bg-secondary-rgb), 0.5)'
+                e.currentTarget.style.color = 'var(--text-primary)'
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent'
+                e.currentTarget.style.color = 'var(--text-secondary)'
+              }}
+              aria-label="Collapse sidebar"
             >
-              {theme === 'dark' || theme === undefined ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+              <Menu className="w-5 h-5" />
             </button>
-          )}
+          </div>
         </div>
-      </div>
+      )}
 
       <nav className="flex-1 p-3 space-y-1">
         {navItems.map((item) => {
@@ -168,67 +231,86 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
-              className="flex items-center gap-3 px-3 py-3 rounded-md transition-all duration-200"
+              className={`flex items-center ${isCollapsed ? 'justify-center px-3' : 'gap-3 px-3'} py-3 rounded-xl transition-all duration-200 nav-item`}
               style={{
-                backgroundColor: isActive ? item.color : 'transparent',
+                background: isActive
+                  ? `linear-gradient(135deg, ${item.color}dd, ${item.color})`
+                  : 'transparent',
                 color: isActive ? 'white' : 'var(--text-primary)',
                 transform: isActive ? 'translateX(4px)' : 'translateX(0)',
+                boxShadow: isActive ? `0 4px 12px ${item.color}40` : 'none',
               }}
               onMouseEnter={(e) => {
                 if (!isActive) {
                   router.prefetch(item.href)
-                  e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'
+                  e.currentTarget.style.background = 'rgba(var(--bg-secondary-rgb), 0.5)'
                   e.currentTarget.style.transform = 'translateX(2px)'
                 }
               }}
               onMouseLeave={(e) => {
                 if (!isActive) {
-                  e.currentTarget.style.backgroundColor = 'transparent'
+                  e.currentTarget.style.background = 'transparent'
                   e.currentTarget.style.transform = 'translateX(0)'
                 }
               }}
+              title={isCollapsed ? item.label : ''}
             >
-              <span style={{ color: isActive ? 'white' : item.color }}>
-                <Icon className="w-6 h-6" />
+              <span style={{ color: isActive ? 'white' : item.color, transition: 'color 0.2s' }}>
+                <Icon className="w-6 h-6 shrink-0" />
               </span>
-              <span className="text-base font-semibold">{item.label}</span>
-              {isActive && (
-                <span className="ml-auto w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+              {!isCollapsed && (
+                <>
+                  <span className="text-base font-semibold">{item.label}</span>
+                  {isActive && (
+                    <span className="ml-auto w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                  )}
+                </>
               )}
             </Link>
           )
         })}
       </nav>
 
-      <div className="p-4 border-t" style={{ borderColor: 'var(--border-color)' }}>
+      <div className={`p-4 border-t sidebar-border ${isCollapsed ? 'justify-center' : ''}`}>
         {email && (
-          <p className="text-xs truncate mb-3 px-1" style={{ color: 'var(--text-secondary)' }}>{email}</p>
+          <p className={`text-xs truncate mb-3 px-3 py-2 rounded-lg ${isCollapsed ? 'hidden' : ''}`} style={{
+            color: 'var(--text-secondary)',
+            background: 'rgba(var(--bg-secondary-rgb), 0.4)'
+          }}>{email}</p>
         )}
         {email ? (
           <button
             onClick={handleLogout}
-            className="flex items-center gap-3 px-3 py-2.5 rounded-md w-full transition-colors"
-            style={{ color: 'var(--text-secondary)', cursor: 'pointer' }}
+            className={`flex items-center gap-3 px-4 py-2.5 rounded-xl w-full transition-all duration-200 ${isCollapsed ? 'justify-center' : ''}`}
+            style={{
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              background: 'transparent'
+            }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'
+              e.currentTarget.style.background = 'rgba(var(--bg-secondary-rgb), 0.6)'
               e.currentTarget.style.color = 'var(--text-primary)'
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = 'transparent'
+              e.currentTarget.style.background = 'transparent'
               e.currentTarget.style.color = 'var(--text-secondary)'
             }}
+            title="Logout"
           >
-            <LogOut className="w-5 h-5" />
-            <span className="text-sm font-medium">Logout</span>
+            <LogOut className="w-5 h-5 shrink-0" />
+            {!isCollapsed && (
+              <span className="text-sm font-medium">Logout</span>
+            )}
           </button>
         ) : (
           <Link
             href="/login"
-            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg w-full text-sm font-medium transition-colors"
+            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl w-full text-sm font-medium transition-all duration-200"
             style={{
-              backgroundColor: 'var(--color-teal)',
+              background: 'linear-gradient(135deg, var(--color-teal) 0%, #0d9488 100%)',
               color: 'white',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(13, 148, 136, 0.3)'
             }}
           >
             <span>Sign up</span>

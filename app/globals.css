@@ -3,11 +3,14 @@
 :root {
   /* Light mode */
   --bg-primary: #ffffff;
+  --bg-primary-rgb: 255, 255, 255;
   --bg-secondary: #f9fafb;
+  --bg-secondary-rgb: 249, 250, 251;
   --bg-warm: #fef9f5;
   --text-primary: #111827;
   --text-secondary: #6b7280;
   --border-color: #e5e7eb;
+  --border-color-rgb: 229, 231, 235;
 
   /* Accent colors - each section has its own personality */
   --color-teal: #0d9488;
@@ -29,11 +32,14 @@
 
 .dark {
   --bg-primary: #111827;
+  --bg-primary-rgb: 17, 24, 39;
   --bg-secondary: #1f2937;
+  --bg-secondary-rgb: 31, 41, 55;
   --bg-warm: #1f2937;
   --text-primary: #f9fafb;
   --text-secondary: #9ca3af;
   --border-color: #374151;
+  --border-color-rgb: 55, 65, 81;
 }
 
 * {
@@ -41,12 +47,10 @@
 }
 
 body {
-  background-color: var(--bg-primary);
   color: var(--text-primary);
   font-family: system-ui, -apple-system, 'SF Pro Display', 'Segoe UI', sans-serif;
   min-height: 100vh;
-  /* Subtle grain texture for personality */
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.6' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  /* Background removed to allow animated background to show */
   /* Performance optimizations */
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -78,6 +82,12 @@ h1, h2, h3, h4, h5, h6 {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* Allow background animation to continue even with reduced motion */
+  .fixed.-z-10 > div {
+    animation-duration: 25s, 30s, 35s, 28s, 32s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 
@@ -129,4 +139,54 @@ img {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border-width: 0;
+}
+
+/* Animated background blobs */
+@keyframes float {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  25% {
+    transform: translate(100px, -50px) scale(1.1);
+  }
+  50% {
+    transform: translate(50px, 100px) scale(0.9);
+  }
+  75% {
+    transform: translate(-50px, 50px) scale(1.05);
+  }
+}
+
+/* Animated blob class */
+.animated-blob {
+  position: absolute !important;
+  width: 400px !important;
+  height: 400px !important;
+  border-radius: 50% !important;
+  filter: blur(80px) !important;
+  opacity: 0.4 !important;
+  animation: float 25s ease-in-out infinite !important;
+  will-change: transform !important;
+}
+
+/* Sidebar glass effect */
+.sidebar-glass {
+  background: rgba(var(--bg-primary-rgb), 0.85);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.08);
+  border-right: 1px solid rgba(var(--border-color-rgb), 0.6);
+}
+
+.sidebar-border {
+  border-bottom-color: rgba(var(--border-color-rgb), 0.6);
+}
+
+/* Mobile header glass effect */
+.mobile-header {
+  background: rgba(var(--bg-primary-rgb), 0.85);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid rgba(var(--border-color-rgb), 0.6);
 }
