@@ -22,7 +22,11 @@ import { generateUUID } from '@/lib/utils'
 
 // Cache for faster loads
 const collectionsCache = {
-  data: null as { collections: Collection[]; collectionBookmarks: Record<string, Bookmark[]> } | null,
+  data: null as {
+    collections: Collection[]
+    collectionBookmarks: Record<string, Bookmark[]>
+    collectionBookmarkCounts: Record<string, number>
+  } | null,
   timestamp: 0,
   CACHE_TTL: 10000 // 10 seconds - increased to reduce unnecessary refetches
 }
@@ -37,6 +41,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   const searchParams = useSearchParams()
   const [collections, setCollections] = useState<Collection[]>([])
   const [collectionBookmarks, setCollectionBookmarks] = useState<Record<string, Bookmark[]>>({})
+  const [collectionBookmarkCounts, setCollectionBookmarkCounts] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(false) // Start with loading=false for instant render
   const [availableBookmarks, setAvailableBookmarks] = useState<Bookmark[]>([])
   const [isGuest, setIsGuest] = useState(false)
@@ -101,6 +106,92 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
 
   const getPrivateEditMessage = () => 'You are not allowed to make edits in this private collection. Ask the owner to make the collection public first.'
 
+  const buildCollectionBookmarkState = async (collectionsToBuild: Collection[], userId: string) => {
+    const collectionIds = collectionsToBuild.map((collection) => collection.id)
+
+    if (collectionIds.length === 0) {
+      return {
+        bookmarksMap: {} as Record<string, Bookmark[]>,
+        countsMap: {} as Record<string, number>
+      }
+    }
+
+    const [junctionResult, directResult, removedResult] = await Promise.all([
+      supabase
+        .from('collection_bookmarks')
+        .select('collection_id, bookmark_id, added_by, bookmarks(*)')
+        .in('collection_id', collectionIds),
+      supabase
+        .from('bookmarks')
+        .select('*')
+        .in('collection_id', collectionIds),
+      supabase
+        .from('removed_collection_bookmarks')
+        .select('collection_id, bookmark_id')
+        .eq('user_id', userId)
+        .in('collection_id', collectionIds)
+    ])
+
+    const junctionRows = junctionResult.data || []
+    const directBookmarks = directResult.data || []
+    const removedRows = removedResult.data || []
+
+    const removedByCollection = removedRows.reduce<Record<string, Set<string>>>((acc, row: { collection_id: string; bookmark_id: string }) => {
+      if (!acc[row.collection_id]) {
+        acc[row.collection_id] = new Set()
+      }
+      acc[row.collection_id].add(row.bookmark_id)
+      return acc
+    }, {})
+
+    const directByCollection = directBookmarks.reduce<Record<string, Bookmark[]>>((acc, bookmark: Bookmark) => {
+      if (!bookmark.collection_id) return acc
+      if (!acc[bookmark.collection_id]) {
+        acc[bookmark.collection_id] = []
+      }
+      acc[bookmark.collection_id].push(bookmark)
+      return acc
+    }, {})
+
+    const bookmarksMap: Record<string, Bookmark[]> = {}
+    const countsMap: Record<string, number> = {}
+
+    collectionsToBuild.forEach((collection) => {
+      const countIds = new Set<string>()
+      let bookmarks = junctionRows.flatMap((row: { collection_id: string; added_by: string; bookmarks: Bookmark | Bookmark[] | null }) => {
+        if (row.collection_id !== collection.id) return []
+        const bookmark = Array.isArray(row.bookmarks) ? row.bookmarks[0] : row.bookmarks
+        const rowBookmarkId = (row as { bookmark_id?: string }).bookmark_id
+        if (rowBookmarkId) {
+          countIds.add(rowBookmarkId)
+        }
+        return bookmark ? [{ ...bookmark, added_by: row.added_by }] : []
+      })
+
+      const seenIds = new Set(bookmarks.map((bookmark: Bookmark) => bookmark.id))
+      ;(directByCollection[collection.id] || []).forEach((bookmark) => {
+        countIds.add(bookmark.id)
+        if (!seenIds.has(bookmark.id)) {
+          bookmarks.push({ ...bookmark, added_by: bookmark.user_id || '' } as typeof bookmarks[0])
+          seenIds.add(bookmark.id)
+        }
+      })
+
+      if (collection.user_id !== userId) {
+        const removedIds = removedByCollection[collection.id] || new Set<string>()
+        bookmarks = bookmarks.filter((bookmark: Bookmark) => !removedIds.has(bookmark.id))
+        removedIds.forEach((bookmarkId) => {
+          countIds.delete(bookmarkId)
+        })
+      }
+
+      countsMap[collection.id] = countIds.size
+      bookmarksMap[collection.id] = bookmarks.slice(0, 3)
+    })
+
+    return { bookmarksMap, countsMap }
+  }
+
   const showToastMessage = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     setToast({ message, type })
     setTimeout(() => setToast(null), type === 'success' ? 2000 : 3000)
@@ -142,12 +233,14 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
             if (storedBookmarks) {
               const parsedBookmarks: Bookmark[] = storedBookmarks
               const bookmarksMap: Record<string, Bookmark[]> = {}
+              const countsMap: Record<string, number> = {}
               parsedCollections.forEach((c: Collection) => {
-                bookmarksMap[c.id] = parsedBookmarks
-                  .filter((b: Bookmark) => b.collection_id === c.id)
-                  .slice(0, 3)
+                const matchingBookmarks = parsedBookmarks.filter((b: Bookmark) => b.collection_id === c.id)
+                bookmarksMap[c.id] = matchingBookmarks.slice(0, 3)
+                countsMap[c.id] = matchingBookmarks.length
               })
               setCollectionBookmarks(bookmarksMap)
+              setCollectionBookmarkCounts(countsMap)
             }
           } else {
             // Create default collection for guest
@@ -164,6 +257,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
             guestStoreSet(GUEST_KEYS.COLLECTIONS, [defaultCollection])
             setCollections([defaultCollection])
             setCollectionBookmarks({ [defaultCollection.id]: [] })
+            setCollectionBookmarkCounts({ [defaultCollection.id]: 0 })
           }
         } catch (e) {
           console.error('Error loading guest data:', e)
@@ -178,8 +272,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       if (collectionsCache.data && now - collectionsCache.timestamp < collectionsCache.CACHE_TTL) {
         setCollections(collectionsCache.data.collections)
         setCollectionBookmarks(collectionsCache.data.collectionBookmarks)
-        setLoading(false)
-        return
+        setCollectionBookmarkCounts(collectionsCache.data.collectionBookmarkCounts)
       }
 
       // Fetch all collection data in parallel (3 queries -> 1 batch)
@@ -276,73 +369,15 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       }
 
       setCollections(uniqueCollections)
-
-      // Then fetch only first 3 bookmarks per collection for preview (in parallel)
-      // Use junction table for many-to-many relationship, also check direct collection_id for backwards compatibility
-      const bookmarkPromises = uniqueCollections.map(async (collection: Collection) => {
-        // Run all queries for this collection in parallel
-        const [junctionResult, directBookmarksResult, removedBookmarksResult] = await Promise.all([
-          supabase
-            .from('collection_bookmarks')
-            .select('bookmark_id, bookmarks(*), added_by')
-            .eq('collection_id', collection.id)
-            .limit(10),
-          supabase
-            .from('bookmarks')
-            .select('*')
-            .eq('collection_id', collection.id)
-            .limit(3),
-          // Only fetch removed bookmarks if not the owner
-          collection.user_id !== user.id
-            ? supabase
-                .from('removed_collection_bookmarks')
-                .select('bookmark_id')
-                .eq('collection_id', collection.id)
-                .eq('user_id', user.id)
-            : Promise.resolve({ data: null })
-        ])
-
-        const junctionData = junctionResult.data
-        const directBookmarks = directBookmarksResult.data
-        const removedBookmarks = removedBookmarksResult?.data
-
-        let bookmarks = junctionData?.flatMap((jb: { bookmarks: Bookmark | Bookmark[] | null; added_by: string }) => {
-          const bookmark = Array.isArray(jb.bookmarks) ? jb.bookmarks[0] : jb.bookmarks
-          return bookmark ? [{ ...bookmark, added_by: jb.added_by }] : []
-        }) || []
-
-        if (process.env.NODE_ENV === 'development') console.log(`Collection ${collection.id}: Junction=${bookmarks.length}, Direct=${directBookmarks?.length || 0}`)
-
-        // Merge both sources, avoiding duplicates
-        const seenIds = new Set(bookmarks.map((b: Bookmark) => b.id))
-        directBookmarks?.forEach((b: Bookmark) => {
-          if (!seenIds.has(b.id)) {
-            bookmarks.push({ ...b, added_by: b.user_id || '' } as typeof bookmarks[0])
-            seenIds.add(b.id)
-          }
-        })
-
-        // If not the owner, filter out bookmarks the user has removed from their view
-        if (collection.user_id !== user.id) {
-          const removedIds = new Set(removedBookmarks?.map((rb: { bookmark_id: string }) => rb.bookmark_id) || [])
-          bookmarks = bookmarks.filter((b: Bookmark) => !removedIds.has(b.id))
-        }
-
-        return { collectionId: collection.id, bookmarks: bookmarks.slice(0, 3) }
-      })
-
-      const results = await Promise.all(bookmarkPromises)
-      const bookmarksMap: Record<string, Bookmark[]> = {}
-      results.forEach(({ collectionId, bookmarks }) => {
-        bookmarksMap[collectionId] = bookmarks
-      })
-
+      const { bookmarksMap, countsMap } = await buildCollectionBookmarkState(uniqueCollections, user.id)
       setCollectionBookmarks(bookmarksMap)
+      setCollectionBookmarkCounts(countsMap)
 
       // Cache the results
       collectionsCache.data = {
         collections: uniqueCollections,
-        collectionBookmarks: bookmarksMap
+        collectionBookmarks: bookmarksMap,
+        collectionBookmarkCounts: countsMap
       }
       collectionsCache.timestamp = now
 
@@ -436,57 +471,9 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
 
       setCollections(uniqueCollections)
 
-      // Fetch sample bookmarks for each collection via junction table + direct collection_id
-      const bookmarkPromises = uniqueCollections.map(async (collection: Collection) => {
-        const { data } = await supabase
-          .from('collection_bookmarks')
-          .select('bookmark_id, bookmarks(*), added_by')
-          .eq('collection_id', collection.id)
-          .limit(10) // Fetch more to account for removed ones
-
-        let bookmarks = data?.flatMap((jb: { bookmarks: Bookmark | Bookmark[] | null; added_by: string }) => {
-          const bookmark = Array.isArray(jb.bookmarks) ? jb.bookmarks[0] : jb.bookmarks
-          return bookmark ? [{ ...bookmark, added_by: jb.added_by }] : []
-        }) || []
-
-        // Also fetch bookmarks with direct collection_id for backwards compatibility
-        const { data: directBookmarks } = await supabase
-          .from('bookmarks')
-          .select('*')
-          .eq('collection_id', collection.id)
-          .limit(10)
-
-        // Merge both sources, avoiding duplicates
-        const seenIds = new Set(bookmarks.map((b: Bookmark) => b.id))
-        directBookmarks?.forEach((b: Bookmark) => {
-          if (!seenIds.has(b.id)) {
-            bookmarks.push({ ...b, added_by: (b as Bookmark & { user_id?: string }).user_id || '' } as typeof bookmarks[0])
-            seenIds.add(b.id)
-          }
-        })
-
-        // If not the owner, filter out bookmarks the user has removed from their view
-        if (collection.user_id !== user.id) {
-          const { data: removedBookmarks } = await supabase
-            .from('removed_collection_bookmarks')
-            .select('bookmark_id')
-            .eq('collection_id', collection.id)
-            .eq('user_id', user.id)
-
-          const removedIds = new Set(removedBookmarks?.map((rb: { bookmark_id: string }) => rb.bookmark_id) || [])
-          bookmarks = bookmarks.filter((b: Bookmark) => !removedIds.has(b.id))
-        }
-
-        return { collectionId: collection.id, bookmarks: bookmarks.slice(0, 3) }
-      })
-
-      const results = await Promise.all(bookmarkPromises)
-      const bookmarksMap: Record<string, Bookmark[]> = {}
-      results.forEach(({ collectionId, bookmarks }) => {
-        bookmarksMap[collectionId] = bookmarks
-      })
-
+      const { bookmarksMap, countsMap } = await buildCollectionBookmarkState(uniqueCollections, user.id)
       setCollectionBookmarks(bookmarksMap)
+      setCollectionBookmarkCounts(countsMap)
       } catch (err) {
         // Silently handle transient network errors during background refresh
         if (process.env.NODE_ENV === 'development') {
@@ -1079,9 +1066,14 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
           setAvailableBookmarks(updatedBookmarks)
           // Update collection bookmarks cache
           const addedBookmarks = updatedBookmarks.filter(b => bookmarkIds.has(b.id))
+          const updatedCollectionBookmarks = updatedBookmarks.filter(b => b.collection_id === collectionId)
           setCollectionBookmarks(prev => ({
             ...prev,
             [collectionId]: [...addedBookmarks, ...(prev[collectionId] || [])].slice(0, 3)
+          }))
+          setCollectionBookmarkCounts(prev => ({
+            ...prev,
+            [collectionId]: updatedCollectionBookmarks.length
           }))
         }
       } catch (e) { if (process.env.NODE_ENV === 'development') console.error('Error saving to localStorage:', e) }
@@ -1114,6 +1106,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     if (failures.length > 0) {
       console.error('Some bookmarks failed to add to collection:', failures)
     }
+    const successfulAdds = insertResults.length - failures.length
 
     // Invalidate cache
     collectionsCache.data = null
@@ -1127,6 +1120,10 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     setCollectionBookmarks(prev => ({
       ...prev,
       [collectionId]: [...addedBookmarks, ...(prev[collectionId] || [])].slice(0, 3)
+    }))
+    setCollectionBookmarkCounts(prev => ({
+      ...prev,
+      [collectionId]: (prev[collectionId] || 0) + successfulAdds
     }))
 
     setAddModalOpen(false)
@@ -1179,8 +1176,9 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
 
         guestStoreSet(GUEST_KEYS.BOOKMARKS, allBookmarks)
         // Refresh collection bookmarks
-        const collectionBookmarks = allBookmarks.filter(b => b.collection_id === collection.id).slice(0, 3)
-        setCollectionBookmarks(prev => ({ ...prev, [collection.id]: collectionBookmarks }))
+        const matchingBookmarks = allBookmarks.filter(b => b.collection_id === collection.id)
+        setCollectionBookmarks(prev => ({ ...prev, [collection.id]: matchingBookmarks.slice(0, 3) }))
+        setCollectionBookmarkCounts(prev => ({ ...prev, [collection.id]: matchingBookmarks.length }))
       } catch (e) { if (process.env.NODE_ENV === 'development') console.error('Error saving to localStorage:', e) }
 
       setSelectCollectionModalOpen(false)
@@ -1197,15 +1195,9 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       collection_id: collection.id
     })
 
-    const { data } = await supabase
-      .from('bookmarks')
-      .select('*')
-      .eq('collection_id', collection.id)
-      .order('created_at', { ascending: false })
-      .limit(3)
-    if (data) {
-      setCollectionBookmarks(prev => ({ ...prev, [collection.id]: data }))
-    }
+    const { bookmarksMap, countsMap } = await buildCollectionBookmarkState([collection], user.id)
+    setCollectionBookmarks(prev => ({ ...prev, [collection.id]: bookmarksMap[collection.id] || [] }))
+    setCollectionBookmarkCounts(prev => ({ ...prev, [collection.id]: countsMap[collection.id] || 0 }))
 
     // Invalidate cache
     collectionsCache.data = null
@@ -1357,25 +1349,9 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
 
         setCollections(uniqueCollections)
 
-        // Fetch bookmarks for collections
-        const bookmarkPromises = uniqueCollections.map(async (collection: Collection) => {
-          const { data } = await supabase
-            .from('collection_bookmarks')
-            .select('bookmark_id, bookmarks(*)')
-            .eq('collection_id', collection.id)
-            .limit(3)
-
-          const bookmarks = data?.flatMap((jb: { bookmarks: Bookmark[] }) => jb.bookmarks || []).filter(Boolean) || []
-          return { collectionId: collection.id, bookmarks }
-        })
-
-        const results = await Promise.all(bookmarkPromises)
-        const bookmarksMap: Record<string, Bookmark[]> = {}
-        results.forEach(({ collectionId, bookmarks }) => {
-          bookmarksMap[collectionId] = bookmarks
-        })
-
+        const { bookmarksMap, countsMap } = await buildCollectionBookmarkState(uniqueCollections, user.id)
         setCollectionBookmarks(bookmarksMap)
+        setCollectionBookmarkCounts(countsMap)
       }
 
       setToast({
@@ -1439,6 +1415,10 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
           setCollectionBookmarks(prev => ({
             ...prev,
             [selectedCollection.id]: [newBookmark, ...(prev[selectedCollection.id] || [])].slice(0, 3)
+          }))
+          setCollectionBookmarkCounts(prev => ({
+            ...prev,
+            [selectedCollection.id]: (prev[selectedCollection.id] || 0) + 1
           }))
           setAvailableBookmarks(allBookmarks)
         }
@@ -1507,6 +1487,16 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       }
     }
 
+    const { bookmarksMap, countsMap } = await buildCollectionBookmarkState([selectedCollection], user.id)
+    setCollectionBookmarks(prev => ({
+      ...prev,
+      [selectedCollection.id]: bookmarksMap[selectedCollection.id] || []
+    }))
+    setCollectionBookmarkCounts(prev => ({
+      ...prev,
+      [selectedCollection.id]: countsMap[selectedCollection.id] || 0
+    }))
+
     // Invalidate cache
     collectionsCache.data = null
     collectionsCache.timestamp = 0
@@ -1534,8 +1524,8 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
         ? new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
         : new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     } else { // count
-      const aCount = (collectionBookmarks[a.id] || []).length
-      const bCount = (collectionBookmarks[b.id] || []).length
+      const aCount = collectionBookmarkCounts[a.id] || 0
+      const bCount = collectionBookmarkCounts[b.id] || 0
       return sortOrder === 'asc' ? aCount - bCount : bCount - aCount
     }
   })
@@ -1651,6 +1641,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredCollections.map(collection => {
             const bookmarks = collectionBookmarks[collection.id] || []
+            const bookmarkCount = collectionBookmarkCounts[collection.id] || 0
             const userRole = collectionRoles[collection.id] || 'owner' // Default to owner for own collections
             const { isOwner, canManageCollection, canToggleVisibility } = getCollectionPermissions(collection)
 
@@ -1799,7 +1790,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                     </div>
 
                     <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
-                      {bookmarks.length} bookmark{bookmarks.length !== 1 ? 's' : ''}
+                      {bookmarkCount} total bookmark{bookmarkCount !== 1 ? 's' : ''}
                     </p>
 
                     <div className="flex gap-2 flex-wrap mb-4">
@@ -1817,8 +1808,8 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                           {b.title}
                         </a>
                       ))}
-                      {bookmarks.length > 3 && (
-                        <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>+{bookmarks.length - 3} more</span>
+                      {bookmarkCount > 3 && (
+                        <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>+{bookmarkCount - 3} more</span>
                       )}
                     </div>
                   </div>
