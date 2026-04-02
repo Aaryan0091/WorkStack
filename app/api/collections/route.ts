@@ -40,6 +40,7 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url)
     const getAll = searchParams.get('all') === 'true'
+    const minimal = searchParams.get('minimal') === 'true'
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
 
@@ -47,7 +48,7 @@ export async function GET(request: NextRequest) {
     if (getAll) {
       const { data, error } = await supabase
         .from('collections')
-        .select('*')
+        .select(minimal ? 'id,name,description,is_public' : '*')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
 

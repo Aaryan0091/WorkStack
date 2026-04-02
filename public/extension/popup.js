@@ -21,6 +21,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const collectionModal = document.getElementById('collectionModal')
   const closeModalBtn = document.getElementById('closeModalBtn')
   const collectionList = document.getElementById('collectionList')
+  const COLLECTIONS_CACHE_KEY = 'workstackCollectionsCache'
+  const COLLECTIONS_CACHE_TTL = 30000
+  let inMemoryCollectionsCache = null
+  let collectionsFetchPromise = null
 
   // Get current active tab
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
@@ -67,6 +71,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   updateUI()
+
+  function getStorage(keys) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(keys, resolve)
+    })
+  }
+
+  function setStorage(values) {
+    return new Promise((resolve) => {
+      chrome.storage.local.set(values, resolve)
+    })
+  }
 
   // Load today's summary from storage
   chrome.storage.local.get(['todayTabs', 'todaySeconds'], (result) => {
@@ -140,6 +156,136 @@ document.addEventListener('DOMContentLoaded', async () => {
     })
   }
 
+  function renderCollections(collections) {
+    if (!collections || collections.length === 0) {
+      collectionList.innerHTML = '<div class="collection-item-empty">No collections found.<br>Create one on the website first!</div>'
+      return
+    }
+
+    collectionList.innerHTML = ''
+    collections.forEach(collection => {
+      const itemDiv = document.createElement('div')
+      itemDiv.className = 'collection-item'
+      itemDiv.dataset.id = collection.id
+      itemDiv.dataset.name = collection.name
+
+      const infoDiv = document.createElement('div')
+      infoDiv.className = 'collection-item-info'
+
+      const nameDiv = document.createElement('div')
+      nameDiv.className = 'collection-item-name'
+      nameDiv.textContent = collection.name
+      infoDiv.appendChild(nameDiv)
+
+      if (collection.description) {
+        const descDiv = document.createElement('div')
+        descDiv.className = 'collection-item-desc'
+        descDiv.textContent = collection.description
+        infoDiv.appendChild(descDiv)
+      }
+
+      itemDiv.appendChild(infoDiv)
+
+      const badgeSpan = document.createElement('span')
+      badgeSpan.className = `collection-item-badge ${collection.is_public ? 'public' : 'private'}`
+      badgeSpan.textContent = collection.is_public ? 'Public' : 'Private'
+      itemDiv.appendChild(badgeSpan)
+
+      itemDiv.addEventListener('click', () => {
+        addToCollection(collection.id, collection.name)
+      })
+
+      collectionList.appendChild(itemDiv)
+    })
+  }
+
+  function readCachedCollections(baseUrl, token) {
+    const now = Date.now()
+
+    if (
+      inMemoryCollectionsCache &&
+      inMemoryCollectionsCache.baseUrl === baseUrl &&
+      inMemoryCollectionsCache.token === token &&
+      now - inMemoryCollectionsCache.timestamp < COLLECTIONS_CACHE_TTL
+    ) {
+      return inMemoryCollectionsCache.collections
+    }
+
+    return null
+  }
+
+  async function fetchCollections(baseUrl, token, { forceRefresh = false } = {}) {
+    if (!forceRefresh) {
+      const cachedCollections = readCachedCollections(baseUrl, token)
+      if (cachedCollections) {
+        return cachedCollections
+      }
+
+      const storageResult = await getStorage([COLLECTIONS_CACHE_KEY])
+      const storedCache = storageResult[COLLECTIONS_CACHE_KEY]
+      if (
+        storedCache &&
+        storedCache.baseUrl === baseUrl &&
+        storedCache.token === token &&
+        Date.now() - storedCache.timestamp < COLLECTIONS_CACHE_TTL
+      ) {
+        inMemoryCollectionsCache = storedCache
+        return storedCache.collections || []
+      }
+    }
+
+    if (collectionsFetchPromise) {
+      return collectionsFetchPromise
+    }
+
+    collectionsFetchPromise = (async () => {
+      const response = await fetch(`${baseUrl}/api/collections?all=true&minimal=true`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch collections')
+      }
+
+      const data = await response.json()
+      const collections = data.collections || []
+      const cachePayload = {
+        baseUrl,
+        token,
+        timestamp: Date.now(),
+        collections
+      }
+
+      inMemoryCollectionsCache = cachePayload
+      await setStorage({ [COLLECTIONS_CACHE_KEY]: cachePayload })
+
+      return collections
+    })()
+
+    try {
+      return await collectionsFetchPromise
+    } finally {
+      collectionsFetchPromise = null
+    }
+  }
+
+  async function preloadCollections() {
+    const { apiBaseUrl, authToken } = await getStorage(['apiBaseUrl', 'authToken'])
+    if (!apiBaseUrl || !authToken) return
+
+    try {
+      await fetchCollections(apiBaseUrl, authToken)
+    } catch {
+      // Silent background preload failure - user can retry from the button flow.
+    }
+  }
+
+  preloadCollections()
+
   // Dashboard button
   dashboardBtn.addEventListener('click', () => {
     getApiBaseUrl((baseUrl) => {
@@ -175,89 +321,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         return
       }
 
-      chrome.storage.local.get(['authToken'], async (result) => {
-        const token = result.authToken
+      const { authToken: token } = await getStorage(['authToken'])
 
-        if (!token) {
-          showNotification('Not logged in. Visit WorkStack to login.', 'error')
-          collectionModal.style.display = 'none'
-          return
-        }
+      if (!token) {
+        showNotification('Not logged in. Visit WorkStack to login.', 'error')
+        collectionModal.style.display = 'none'
+        return
+      }
 
       // Show loading state in modal
       collectionModal.style.display = 'flex'
-      collectionList.innerHTML = '<div class="collection-item-loading">Loading collections...</div>'
+      const cachedCollections = readCachedCollections(baseUrl, token)
+      if (cachedCollections) {
+        renderCollections(cachedCollections)
+      } else {
+        collectionList.innerHTML = '<div class="collection-item-loading">Loading collections...</div>'
+      }
 
       try {
-        // Fetch collections
-        const response = await fetch(`${baseUrl}/api/collections?all=true`, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          }
-        })
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch collections')
-        }
-
-        const data = await response.json()
-        const collections = data.collections || []
-
-        if (collections.length === 0) {
-          collectionList.innerHTML = '<div class="collection-item-empty">No collections found.<br>Create one on the website first!</div>'
-          return
-        }
-
-        // Render collection items - use DOM methods to avoid CSP violations
-        collectionList.innerHTML = ''
-        collections.forEach(collection => {
-          const itemDiv = document.createElement('div')
-          itemDiv.className = 'collection-item'
-          itemDiv.dataset.id = collection.id
-          itemDiv.dataset.name = collection.name
-
-          const infoDiv = document.createElement('div')
-          infoDiv.className = 'collection-item-info'
-
-          const nameDiv = document.createElement('div')
-          nameDiv.className = 'collection-item-name'
-          nameDiv.textContent = collection.name
-          infoDiv.appendChild(nameDiv)
-
-          if (collection.description) {
-            const descDiv = document.createElement('div')
-            descDiv.className = 'collection-item-desc'
-            descDiv.textContent = collection.description
-            infoDiv.appendChild(descDiv)
-          }
-
-          itemDiv.appendChild(infoDiv)
-
-          const badgeSpan = document.createElement('span')
-          badgeSpan.className = `collection-item-badge ${collection.is_public ? 'public' : 'private'}`
-          badgeSpan.textContent = collection.is_public ? 'Public' : 'Private'
-          itemDiv.appendChild(badgeSpan)
-
-          collectionList.appendChild(itemDiv)
-
-          // Add click handler
-          itemDiv.addEventListener('click', () => {
-            const collectionId = itemDiv.dataset.id
-            const collectionName = itemDiv.dataset.name
-            addToCollection(collectionId, collectionName)
-          })
-        })
-
-        // Add click handlers to collection items
-        document.querySelectorAll('.collection-item').forEach(item => {
-          item.addEventListener('click', () => {
-            const collectionId = item.dataset.id
-            const collectionName = item.dataset.name
-            addToCollection(collectionId, collectionName)
-          })
-        })
+        const collections = await fetchCollections(baseUrl, token)
+        renderCollections(collections)
 
       } catch {
         // Show empty state - use DOM methods
@@ -267,7 +350,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         emptyDiv.innerHTML = 'Failed to load collections.\nTry refreshing the page.'
         collectionList.appendChild(emptyDiv)
       }
-    })
     })
   })
 

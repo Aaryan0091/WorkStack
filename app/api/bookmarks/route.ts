@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest } from 'next/server'
+import { after } from 'next/server'
 import {
   apiSuccess,
   withApiHandler,
@@ -134,19 +135,22 @@ export const POST = withApiHandler(async (request: NextRequest) => {
     }
   }
 
-  // Apply AI/fallback tags before returning so extension and API callers get consistent tagging.
+  // Schedule AI/fallback tagging after the response so bookmark saves return faster,
+  // especially for extension users, while preserving the same tagging behavior.
   if (data?.id) {
-    try {
-      await applyAiTagsToBookmark(
-        user.id,
-        data.id,
-        data.title,
-        data.url,
-        data.description || ''
-      )
-    } catch (error) {
-      console.error('[Create Bookmark] Auto-tagging failed:', error)
-    }
+    after(async () => {
+      try {
+        await applyAiTagsToBookmark(
+          user.id,
+          data.id,
+          data.title,
+          data.url,
+          data.description || ''
+        )
+      } catch (error) {
+        console.error('[Create Bookmark] Auto-tagging failed:', error)
+      }
+    })
   }
 
   return corsHeaders(apiSuccess({ bookmark: data }, 'Bookmark created successfully', 201), request)
