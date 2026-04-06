@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useState, useRef, useMemo, lazy, Suspense } from 'react'
+import { useEffect, useState, useRef, useMemo, lazy, Suspense, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { createBookmarksViaApi } from '@/lib/client-bookmark-api'
-import { getExtensionId, isExtensionInstalledViaContentScript, checkExtensionLocal, sendExtensionMessage } from '@/lib/extension-detect'
+import { getExtensionId, sendExtensionMessage } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,10 @@ import {
   markGuestMode
 } from '@/lib/guest-storage'
 import { generateUUID } from '@/lib/utils'
+import { useCollectionPickerStore } from '@/lib/stores/collection-picker-store'
+import { useExtensionStatusStore } from '@/lib/stores/extension-status-store'
+import { useBookmarkMutationsStore } from '@/lib/stores/bookmark-mutations-store'
+import { useBookmarkCacheStore } from '@/lib/stores/bookmark-cache-store'
 
 // Lazy load heavy chart component for faster initial load
 const ChartWithToggle = lazy(() => import('@/components/dashboard/charts').then(m => ({ default: m.ChartWithToggle })))
@@ -52,6 +56,19 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const router = useRouter()
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(initialBookmarks)
   const [collections, setCollections] = useState<Collection[]>(initialCollections)
+  const pickerCollections = useCollectionPickerStore((state) => state.collections)
+  const hydratePickerCollections = useCollectionPickerStore((state) => state.hydrateCollections)
+  const addPickerCollection = useCollectionPickerStore((state) => state.addCollection)
+  const extensionInstalled = useExtensionStatusStore((state) => state.installed)
+  const ensureExtensionStatusListening = useExtensionStatusStore((state) => state.ensureListening)
+  const refreshExtensionInstalled = useExtensionStatusStore((state) => state.refreshInstalled)
+  const isBookmarkMutationPending = useBookmarkMutationsStore((state) => state.isPending)
+  const setBookmarkFavoriteMutation = useBookmarkMutationsStore((state) => state.setBookmarkFavorite)
+  const setBookmarkReadMutation = useBookmarkMutationsStore((state) => state.setBookmarkRead)
+  const deleteBookmarkMutation = useBookmarkMutationsStore((state) => state.deleteBookmark)
+  const hydrateCachedBookmarks = useBookmarkCacheStore((state) => state.hydrateBookmarks)
+  const applyCachedBookmarks = useBookmarkCacheStore((state) => state.applyBookmarks)
+  const bookmarkCacheVersion = useBookmarkCacheStore((state) => state.version)
   // Combined counts state for atomic updates - initialized from server-side data
   const [counts, setCounts] = useState(initialStats)
   const [isGuest, setIsGuest] = useState(false)
@@ -65,10 +82,17 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     setGreeting(getGreeting())
   }, [])
 
+  useEffect(() => {
+    hydratePickerCollections(collections)
+  }, [collections, hydratePickerCollections])
+
+  useEffect(() => {
+    hydrateCachedBookmarks(bookmarks, isGuest ? null : undefined)
+  }, [bookmarks, hydrateCachedBookmarks, isGuest])
+
   const [isPaused, setIsPaused] = useState(false)
   const [hasSavedSession, setHasSavedSession] = useState(false)
   const [hasServerActivity, setHasServerActivity] = useState(false)
-  const [extensionInstalled, setExtensionInstalled] = useState<boolean | null>(null)
   const [showExtensionModal, setShowExtensionModal] = useState(false)
   const [showPermissionModal, setShowPermissionModal] = useState(false)
   const [showPreviousActivityModal, setShowPreviousActivityModal] = useState(false)
@@ -304,45 +328,27 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     }, delay)
   }
 
+  const startExtensionStatusPolling = useCallback(() => {
+    if (checkIntervalRef.current) {
+      clearInterval(checkIntervalRef.current)
+    }
+    checkExtensionStatus()
+    checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
+  }, [])
+
   // Check extension on mount (deferred to not block initial render)
   useEffect(() => {
-
-    // Use a ref to store the handler for stable reference across HMR
-    const handlerRef = { current: null as EventListener | null }
-
-    handlerRef.current = (event: Event) => {
-      const customEvent = event as CustomEvent<{ installed: boolean; extensionId?: string }>
-      if (customEvent.detail?.installed) {
-        setExtensionInstalled(true)
-        if (customEvent.detail?.extensionId) {
-          // Clear any existing interval before starting a new one
-          if (checkIntervalRef.current) {
-            clearInterval(checkIntervalRef.current)
-          }
-          checkExtensionStatus()
-          checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
-        }
-      }
-    }
-
-    const handleExtensionLoaded = handlerRef.current
-    window.addEventListener('workstack-extension-loaded', handleExtensionLoaded)
+    ensureExtensionStatusListening()
 
     // Defer extension detection to not block initial render
     initTimerRef.current = setTimeout(async () => {
       // Also check immediately (in case content script already ran)
-      if (isExtensionInstalledViaContentScript()) {
-        setExtensionInstalled(true)
+      if (ensureExtensionStatusListening()) {
         const extensionId = getExtensionId()
         if (extensionId) {
           // Delay status check slightly
           statusCheckTimerRef.current = setTimeout(() => {
-            // Clear any existing interval before starting a new one
-            if (checkIntervalRef.current) {
-              clearInterval(checkIntervalRef.current)
-            }
-            checkExtensionStatus()
-            checkIntervalRef.current = setInterval(checkExtensionStatus, 2000)
+            startExtensionStatusPolling()
           }, 100)
         }
       }
@@ -381,7 +387,10 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       setLoading(false)
 
       // Check extension status regardless of login state
-      checkExtensionLocal()
+      const detected = await refreshExtensionInstalled()
+      if (detected) {
+        startExtensionStatusPolling()
+      }
 
       // Only store token and set up subscription if logged in
       if (user) {
@@ -488,11 +497,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         clearInterval(checkIntervalRef.current)
         checkIntervalRef.current = null
       }
-
-      // Remove event listeners
-      if (handlerRef.current) {
-        window.removeEventListener('workstack-extension-loaded', handlerRef.current)
-      }
       document.removeEventListener('visibilitychange', handleVisibilityChange)
 
       // Unsubscribe from auth changes
@@ -507,6 +511,14 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (extensionInstalled) {
+      startExtensionStatusPolling()
+    }
+
+    return undefined
+  }, [extensionInstalled, startExtensionStatusPolling])
 
   // Store auth token in extension
   const storeAuthTokenToExtension = (token: string) => {
@@ -574,7 +586,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     }
 
     // Re-check extension status when user clicks Track Activity (fast check)
-    const recheckResult: boolean = await checkExtensionLocal(2, 100)
+    const recheckResult = await refreshExtensionInstalled({ retries: 2, delayMs: 100 })
     if (recheckResult) {
       // Extension is now detected - proceed with tracking
       setShowPermissionModal(true)
@@ -844,6 +856,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       }
 
       setCollections([data, ...collections])
+      addPickerCollection(data)
       await addHistoryItemsToBookmarks(data.id)
     } catch (error) {
       console.error('[History Collection Create] Failed:', error)
@@ -977,6 +990,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       }
 
       setCollections([data, ...collections])
+      addPickerCollection(data)
       await addOpenTabsToBookmarks(data.id)
     } catch (error) {
       console.error('[Open Tabs Collection Create] Failed:', error)
@@ -1015,67 +1029,32 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
   // Bookmark action functions
   const toggleFavorite = async (bookmark: Bookmark) => {
-    if (isGuest) {
-      const updated = bookmarks.map(b => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b)
-      setBookmarks(updated)
-      // Save to localStorage
-      try {
-        const stored = guestStoreGet<Bookmark[]>(GUEST_KEYS.BOOKMARKS)
-        if (stored) {
-          const updatedAll = stored.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b)
-          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
-        }
-      } catch {
-        // Error saving to localStorage
-      }
-      fetchFreshData()
+    if (isBookmarkMutationPending(bookmark.id)) {
       return
     }
-    await supabase.from('bookmarks').update({ is_favorite: !bookmark.is_favorite }).eq('id', bookmark.id)
-    setBookmarks(bookmarks.map(b => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b))
+
+    const updatedBookmark = await setBookmarkFavoriteMutation(bookmark, !bookmark.is_favorite, { isGuest })
+    setBookmarks((prev) => prev.map((item) => item.id === bookmark.id ? updatedBookmark : item))
     fetchFreshData()
   }
 
   const toggleRead = async (bookmark: Bookmark) => {
-    if (isGuest) {
-      const updated = bookmarks.map(b => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b)
-      setBookmarks(updated)
-      // Save to localStorage
-      try {
-        const stored = guestStoreGet<Bookmark[]>(GUEST_KEYS.BOOKMARKS)
-        if (stored) {
-          const updatedAll = stored.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b)
-          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
-        }
-      } catch {
-        // Error saving to localStorage
-      }
-      fetchFreshData()
+    if (isBookmarkMutationPending(bookmark.id)) {
       return
     }
-    await supabase.from('bookmarks').update({ is_read: !bookmark.is_read }).eq('id', bookmark.id)
-    setBookmarks(bookmarks.map(b => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b))
+
+    const updatedBookmark = await setBookmarkReadMutation(bookmark, !bookmark.is_read, { isGuest })
+    setBookmarks((prev) => prev.map((item) => item.id === bookmark.id ? updatedBookmark : item))
     fetchFreshData()
   }
 
   const deleteBookmark = async (id: string) => {
-    if (isGuest) {
-      setBookmarks(bookmarks.filter(b => b.id !== id))
-      // Save to localStorage
-      try {
-        const stored = guestStoreGet<Bookmark[]>(GUEST_KEYS.BOOKMARKS)
-        if (stored) {
-          const updatedAll = stored.filter((b: Bookmark) => b.id !== id)
-          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedAll)
-        }
-      } catch {
-        // Error saving to localStorage
-      }
-      fetchFreshData()
+    if (isBookmarkMutationPending(id)) {
       return
     }
-    await supabase.from('bookmarks').delete().eq('id', id)
-    setBookmarks(bookmarks.filter(b => b.id !== id))
+
+    await deleteBookmarkMutation(id, { isGuest })
+    setBookmarks((prev) => prev.filter((bookmark) => bookmark.id !== id))
     fetchFreshData()
   }
 
@@ -1085,6 +1064,14 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     favorites: counts.favoritesCount,
     collections: collections.length,
   }), [counts.totalBookmarks, counts.unreadCount, counts.favoritesCount, collections.length])
+
+  const visibleBookmarks = useMemo(
+    () => {
+      void bookmarkCacheVersion
+      return applyCachedBookmarks(bookmarks)
+    },
+    [applyCachedBookmarks, bookmarkCacheVersion, bookmarks]
+  )
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
@@ -1449,7 +1436,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           ) : (
             <>
               <div className="space-y-3">
-                {bookmarks.slice(0, 3).map(bookmark => (
+                {visibleBookmarks.slice(0, 3).map(bookmark => (
                   <Card
                     key={bookmark.id}
                     className="hover:shadow-md transition-all duration-75 hover:scale-[1.02] active:scale-100 cursor-pointer"
@@ -1485,7 +1472,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                   </Card>
                 ))}
               </div>
-              {bookmarks.length > 3 && (
+              {visibleBookmarks.length > 3 && (
                 <button
                   onClick={() => router.push('/bookmarks')}
                   className="w-full mt-4 p-4 rounded-lg font-medium transition-all duration-75 hover:scale-[1.02] active:scale-100 text-center"
@@ -1524,7 +1511,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
             <Button onClick={() => setShowExtensionModal(false)} className="flex-1">Got it</Button>
             <Button variant="secondary" onClick={() => {
               setShowExtensionModal(false)
-              checkExtensionLocal()
+              refreshExtensionInstalled().catch(() => {})
             }} className="flex-1">I&apos;ve Installed It</Button>
           </div>
         </div>
@@ -1745,10 +1732,10 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         title="Select Collection"
       >
         <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
-          {collections.length === 0 ? (
+          {pickerCollections.length === 0 ? (
             <p style={{ color: 'var(--text-secondary)' }}>No collections yet. Create one first.</p>
           ) : (
-            collections.map((collection) => (
+            pickerCollections.map((collection) => (
               <button
                 key={collection.id}
                 type="button"
@@ -1942,10 +1929,10 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         title="Select Collection"
       >
         <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
-          {collections.length === 0 ? (
+          {pickerCollections.length === 0 ? (
             <p style={{ color: 'var(--text-secondary)' }}>No collections yet. Create one first.</p>
           ) : (
-            collections.map((collection) => (
+            pickerCollections.map((collection) => (
               <button
                 key={collection.id}
                 type="button"

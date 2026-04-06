@@ -22,6 +22,103 @@ interface Bookmark {
 
 interface ScoredBookmark extends Bookmark {
   _score: number
+  _matchedQueries: number
+  _exactMatches: number
+  _strongWordMatches: number
+}
+
+const GENERIC_QUERY_TERMS = new Set([
+  'article', 'blog', 'content', 'guide', 'homepage', 'link', 'music', 'page',
+  'reference', 'resource', 'site', 'song', 'soundtrack', 'title', 'tool',
+  'tools', 'track', 'tutorial', 'video', 'website', 'youtube'
+])
+
+function normalizeSemanticQuery(query: string): string | null {
+  const normalized = query
+    .toLowerCase()
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/\s+/g, ' ')
+
+  if (!normalized || normalized.length < 3) {
+    return null
+  }
+
+  const words = normalized.split(/\s+/).filter(Boolean)
+  if (words.length === 0) {
+    return null
+  }
+
+  const hasSpecificWord = words.some((word) => word.length >= 4 && !GENERIC_QUERY_TERMS.has(word))
+  if (!hasSpecificWord && GENERIC_QUERY_TERMS.has(normalized)) {
+    return null
+  }
+
+  if (!hasSpecificWord && words.every((word) => GENERIC_QUERY_TERMS.has(word))) {
+    return null
+  }
+
+  return normalized
+}
+
+function sanitizeSemanticQueries(queries: unknown[]): string[] {
+  const unique = new Set<string>()
+  const sanitized: string[] = []
+
+  for (const query of queries) {
+    if (typeof query !== 'string') continue
+
+    const normalized = normalizeSemanticQuery(query)
+    if (!normalized || unique.has(normalized)) continue
+
+    unique.add(normalized)
+    sanitized.push(normalized)
+  }
+
+  return sanitized
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function tokenizeSemanticText(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+function hasDelimitedPhrase(text: string, phrase: string): boolean {
+  const escapedPhrase = phrase
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(escapeRegex)
+    .join('\\s+')
+
+  if (!escapedPhrase) {
+    return false
+  }
+
+  const pattern = new RegExp(`(?:^|[^a-z0-9])${escapedPhrase}(?=$|[^a-z0-9])`, 'i')
+  return pattern.test(text)
+}
+
+function hasStrongWordMatch(words: Set<string>, queryWord: string): boolean {
+  if (words.has(queryWord)) {
+    return true
+  }
+
+  // Allow common tech suffix variants like reactjs/typescript shorthands without
+  // letting unrelated substrings such as "reaction" count as matches.
+  if (queryWord.length >= 4) {
+    if (words.has(`${queryWord}js`) || words.has(`${queryWord}ts`)) {
+      return true
+    }
+  }
+
+  return false
 }
 export async function OPTIONS(request: NextRequest) {
   return handleOptionsRequest(request)
@@ -106,6 +203,7 @@ CRITICAL GUIDELINES:
 2. Think about TOPICS, THEMES, and CONCEPTS - not just exact words
 3. Generate 5-8 diverse search queries that would find semantically related content
 4. Include: specific entities, broader topics, related technologies, synonyms, and adjacent concepts
+5. Avoid generic container words like "video", "song", "tutorial", "guide", "article", or "youtube" unless they are part of a more specific topic phrase
 
 SEMANTIC EXPANSION STRATEGY:
 - If you see "ChatGPT", also extract: "AI assistant", "language model", "OpenAI", "GPT"
@@ -148,7 +246,7 @@ Now extract semantic queries from this reading list:`
       }
 
       const parsed = JSON.parse(content)
-      const queries = parsed.queries || []
+      const queries = sanitizeSemanticQueries(parsed.queries || [])
 
       if (queries.length === 0) {
         const response = NextResponse.json({ recommendations: [] })
@@ -170,42 +268,85 @@ Now extract semantic queries from this reading list:`
       // Score bookmarks based on query matches with improved semantic matching
       const scoredBookmarks = otherBookmarks.map((bookmark: Bookmark): ScoredBookmark => {
         let score = 0
+        const matchedQueries = new Set<string>()
+        let exactMatches = 0
+        let strongWordMatches = 0
         const titleLower = (bookmark.title || '').toLowerCase()
         const descLower = (bookmark.description || '').toLowerCase()
         const urlLower = bookmark.url.toLowerCase()
-        const titleWords = titleLower.split(/\s+/)
-        const descWords = descLower.split(/\s+/)
+        const titleWords = new Set(tokenizeSemanticText(titleLower))
+        const descWords = new Set(tokenizeSemanticText(descLower))
+        const urlWords = new Set(tokenizeSemanticText(urlLower))
 
         for (const query of queries) {
           const queryLower = query.toLowerCase()
-          const queryWords = queryLower.split(/\s+/)
+          const queryWords = queryLower
+            .split(/\s+/)
+            .filter((word) => word.length >= 4 && !GENERIC_QUERY_TERMS.has(word))
+          let queryMatched = false
 
-          // Exact phrase match (highest score)
-          if (titleLower.includes(queryLower)) score += 10
-          if (descLower.includes(queryLower)) score += 5
-          if (urlLower.includes(queryLower)) score += 2
+          // Exact delimited phrase match (highest score)
+          if (hasDelimitedPhrase(titleLower, queryLower)) {
+            score += 14
+            exactMatches += 1
+            queryMatched = true
+          }
+          if (hasDelimitedPhrase(descLower, queryLower)) {
+            score += 8
+            queryMatched = true
+          }
+          if (!queryMatched && hasDelimitedPhrase(urlLower, queryLower)) {
+            score += 2
+          }
 
-          // Partial word matching for multi-word queries
-          // e.g., "AI agent" should match if title has "AI" or "agent"
+          // Strong token matching for multi-word queries
           for (const qWord of queryWords) {
-            if (qWord.length < 3) continue // Skip very short words
+            const titleMatched = hasStrongWordMatch(titleWords, qWord)
+            const descMatched = hasStrongWordMatch(descWords, qWord)
+            const urlMatched = hasStrongWordMatch(urlWords, qWord)
 
-            // Match against individual words
-            if (titleWords.some(w => w.includes(qWord) || qWord.includes(w))) score += 3
-            if (descWords.some(w => w.includes(qWord) || qWord.includes(w))) score += 1
+            if (titleMatched) {
+              score += 4
+              strongWordMatches += 1
+              queryMatched = true
+            }
+            if (descMatched) {
+              score += 2
+              strongWordMatches += 1
+              queryMatched = true
+            }
+            if (!titleMatched && !descMatched && urlMatched) {
+              score += 1
+            }
+          }
+
+          if (queryMatched) {
+            matchedQueries.add(queryLower)
           }
         }
 
-        return { ...bookmark, _score: score }
+        return {
+          ...bookmark,
+          _score: score,
+          _matchedQueries: matchedQueries.size,
+          _exactMatches: exactMatches,
+          _strongWordMatches: strongWordMatches,
+        }
       })
 
       // Filter and sort by score - return up to 12 recommendations
       const recommendations = scoredBookmarks
-        .filter((b: ScoredBookmark) => b._score > 0)
+        .filter((bookmark: ScoredBookmark) => {
+          if (bookmark._score < 6) return false
+          if (bookmark._exactMatches > 0 && bookmark._strongWordMatches > 0) return true
+          if (bookmark._matchedQueries >= 2) return true
+          if (bookmark._strongWordMatches >= 3) return true
+          return false
+        })
         .sort((a: ScoredBookmark, b: ScoredBookmark) => b._score - a._score)
         .slice(0, 12)
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        .map(({ _score, ...bookmark }) => bookmark)
+        .map(({ _score, _matchedQueries, _exactMatches, _strongWordMatches, ...bookmark }) => bookmark)
 
       const response = NextResponse.json({
         recommendations,

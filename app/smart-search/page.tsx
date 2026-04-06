@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Bookmark, Collection } from '@/lib/types'
+import { useAiAvailabilityStore } from '@/lib/stores/ai-availability-store'
+import { useAccessibleCollectionsStore } from '@/lib/stores/accessible-collections-store'
 
 type SearchMode = 'all' | 'semantic' | 'tags' | 'name'
 
@@ -19,9 +21,11 @@ export default function SmartSearchPage() {
   const [mode, setMode] = useState<SearchMode>('all')
   const [results, setResults] = useState<BookmarkWithTags[]>([])
   const [loading, setLoading] = useState(false)
-  const [collections, setCollections] = useState<Collection[]>([])
+  const collections = useAccessibleCollectionsStore((state) => state.collections)
+  const loadAccessibleCollections = useAccessibleCollectionsStore((state) => state.loadAccessibleCollections)
   const [selectedCollection, setSelectedCollection] = useState<string>('')
-  const [aiEnabled, setAiEnabled] = useState(true)
+  const aiEnabled = useAiAvailabilityStore((state) => state.enabled)
+  const loadAiAvailability = useAiAvailabilityStore((state) => state.loadAiAvailability)
   const [allBookmarks, setAllBookmarks] = useState<BookmarkWithTags[]>([])
   const [collectionBookmarkMap, setCollectionBookmarkMap] = useState<Record<string, Set<string>>>({})
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -34,32 +38,7 @@ export default function SmartSearchPage() {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return
 
-        const [ownedCollectionsRes, sharedCollectionsRes] = await Promise.all([
-          supabase
-            .from('collections')
-            .select('*')
-            .eq('user_id', user.id)
-            .order('name'),
-          supabase
-            .from('shared_collections')
-            .select('collection_id, collections(*)')
-            .eq('user_id', user.id)
-        ])
-
-        const seenCollectionIds = new Set<string>()
-        const accessibleCollections = [
-          ...(ownedCollectionsRes.data || []),
-          ...(sharedCollectionsRes.data?.flatMap((row: { collections: Collection[] | Collection | null }) => {
-            if (!row.collections) return []
-            return Array.isArray(row.collections) ? row.collections : [row.collections]
-          }) || [])
-        ].filter((collection: Collection) => {
-          if (seenCollectionIds.has(collection.id)) return false
-          seenCollectionIds.add(collection.id)
-          return true
-        }).sort((a, b) => a.name.localeCompare(b.name))
-
-        setCollections(accessibleCollections)
+        const accessibleCollections = await loadAccessibleCollections()
 
         const accessibleCollectionIds = accessibleCollections.map((collection) => collection.id)
 
@@ -108,12 +87,8 @@ export default function SmartSearchPage() {
     }
     loadData()
 
-    // Check if AI is enabled
-    fetch('/api/ai/suggest-tags')
-      .then((res) => res.json())
-      .then((data) => setAiEnabled(data.enabled))
-      .catch(() => setAiEnabled(false))
-  }, [])
+    loadAiAvailability().catch(() => {})
+  }, [loadAccessibleCollections, loadAiAvailability])
 
   // Get tags for a bookmark (moved before search functions)
   const getBookmarkTags = useCallback((bookmark: BookmarkWithTags) => {

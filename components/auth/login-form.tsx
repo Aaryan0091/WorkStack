@@ -99,6 +99,11 @@ export function LoginForm() {
         const chromeWindow = window as ChromeWindow
 
         if (chromeWindow.chrome?.runtime) {
+          const extensionId = getExtensionId()
+          if (!extensionId) {
+            return
+          }
+
           let responded = false
           const timeout = setTimeout(() => {
             if (!responded) {
@@ -106,7 +111,7 @@ export function LoginForm() {
             }
           }, 500)
 
-          chromeWindow.chrome.runtime.sendMessage?.(getExtensionId() || '', {
+          chromeWindow.chrome.runtime.sendMessage?.(extensionId, {
             action: 'storeAuthToken',
             authToken: session.access_token,
             apiBaseUrl

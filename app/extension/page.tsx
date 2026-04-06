@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { isChromiumBased, getBrowserName } from '@/lib/browser-detect'
-import { checkExtensionWithTimeout, getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
+import { getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
+import { useExtensionStatusStore } from '@/lib/stores/extension-status-store'
 
 export default function ExtensionPage() {
   const router = useRouter()
@@ -12,7 +13,9 @@ export default function ExtensionPage() {
   const [supported, setSupported] = useState<boolean | null>(true)
   const [mounted, setMounted] = useState(false)
   const [downloading, setDownloading] = useState(false)
-  const [extensionInstalled, setExtensionInstalled] = useState<boolean | null>(null)
+  const extensionInstalled = useExtensionStatusStore((state) => state.installed)
+  const ensureExtensionStatusListening = useExtensionStatusStore((state) => state.ensureListening)
+  const refreshExtensionInstalled = useExtensionStatusStore((state) => state.refreshInstalled)
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [scrollY, setScrollY] = useState(0)
   const [debugInfo, setDebugInfo] = useState<Record<string, string>>({})
@@ -42,43 +45,25 @@ export default function ExtensionPage() {
     const syncCheck = isExtensionInstalledViaContentScript()
     console.log('[Extension Page] Sync check result:', syncCheck)
 
-    // Then check via postMessage (works across isolated worlds)
-    const isInstalled = await checkExtensionWithTimeout(3000)
+    // Then check via postMessage/runtime ping (works across isolated worlds)
+    const isInstalled = await refreshExtensionInstalled({ timeoutMs: 3000 })
     console.log('[Extension Page] Async check result:', isInstalled)
 
     // Final update after check
     updateDebugInfo()
-
-    setExtensionInstalled(isInstalled)
-  }, [updateDebugInfo])
+  }, [refreshExtensionInstalled, updateDebugInfo])
 
   useEffect(() => {
     setMounted(true)
     setBrowser(getBrowserName())
     setSupported(isChromiumBased())
+    ensureExtensionStatusListening()
 
     // Collect initial debug info
     updateDebugInfo()
 
     // Check for extension on mount
     checkExtensionInstalled()
-
-    // Listen for custom event from content script
-    const handleExtensionLoaded = () => {
-      setExtensionInstalled(true)
-      updateDebugInfo()
-    }
-    window.addEventListener('workstack-extension-loaded', handleExtensionLoaded)
-
-    // Listen for extension announcement
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'workstack-extension-installed') {
-        console.log('[Extension Page] Received extension announcement:', event.data.extensionId)
-        updateDebugInfo()
-        setExtensionInstalled(true)
-      }
-    }
-    window.addEventListener('message', handleMessage)
 
     // Re-check when tab becomes visible again (user might have just installed extension)
     const handleVisibilityChange = () => {
@@ -98,12 +83,16 @@ export default function ExtensionPage() {
 
     return () => {
       window.removeEventListener('scroll', handleScroll)
-      window.removeEventListener('workstack-extension-loaded', handleExtensionLoaded)
-      window.removeEventListener('message', handleMessage)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       clearInterval(debugInterval)
     }
-  }, [checkExtensionInstalled, showDebug, updateDebugInfo])
+  }, [checkExtensionInstalled, ensureExtensionStatusListening, showDebug, updateDebugInfo])
+
+  useEffect(() => {
+    if (mounted) {
+      updateDebugInfo()
+    }
+  }, [extensionInstalled, mounted, updateDebugInfo])
 
   // Calculate scale based on scroll (1.5 at top, 1 at 100px scroll)
   // Only apply animation after component is mounted to avoid hydration mismatch

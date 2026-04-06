@@ -1,15 +1,16 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { Card, CardContent } from '@/components/ui/card'
 import { Modal } from '@/components/ui/modal'
 import { Textarea } from '@/components/ui/input'
 import type { Bookmark } from '@/lib/types'
+import { useBookmarkMutationsStore } from '@/lib/stores/bookmark-mutations-store'
+import { useBookmarkCacheStore } from '@/lib/stores/bookmark-cache-store'
 import {
   guestStoreGet,
-  guestStoreSet,
   GUEST_KEYS,
   markGuestMode
 } from '@/lib/guest-storage'
@@ -46,6 +47,13 @@ function isOldNeverOpened(bookmark: Bookmark): boolean {
 }
 
 export function ReadingListContent() {
+  const isBookmarkMutationPending = useBookmarkMutationsStore((state) => state.isPending)
+  const setBookmarkReadMutation = useBookmarkMutationsStore((state) => state.setBookmarkRead)
+  const updateBookmarkNotesMutation = useBookmarkMutationsStore((state) => state.updateBookmarkNotes)
+  const markBookmarkOpenedMutation = useBookmarkMutationsStore((state) => state.markBookmarkOpened)
+  const hydrateCachedBookmarks = useBookmarkCacheStore((state) => state.hydrateBookmarks)
+  const applyCachedBookmarks = useBookmarkCacheStore((state) => state.applyBookmarks)
+  const bookmarkCacheVersion = useBookmarkCacheStore((state) => state.version)
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   const [neverOpened, setNeverOpened] = useState<Bookmark[]>([])
   const [semanticallyRelated, setSemanticallyRelated] = useState<Bookmark[]>([])
@@ -74,6 +82,13 @@ export function ReadingListContent() {
   useEffect(() => {
     localStorage.setItem('workstack_show_suggestions', String(showSuggestions))
   }, [showSuggestions])
+
+  useEffect(() => {
+    hydrateCachedBookmarks(
+      [...bookmarks, ...neverOpened, ...semanticallyRelated, ...suggestions],
+      isGuest ? null : undefined
+    )
+  }, [bookmarks, hydrateCachedBookmarks, isGuest, neverOpened, semanticallyRelated, suggestions])
 
   useEffect(() => {
     let mounted = true
@@ -145,8 +160,16 @@ export function ReadingListContent() {
             table: 'bookmarks',
             filter: `user_id=eq.${user.id}`
           },
-          () => {
-            refreshReadingData(user.id)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (payload: any) => {
+            const shouldRefreshSemantic =
+              payload?.eventType !== 'UPDATE' ||
+              payload?.new?.is_read !== payload?.old?.is_read ||
+              payload?.new?.title !== payload?.old?.title ||
+              payload?.new?.description !== payload?.old?.description ||
+              payload?.new?.url !== payload?.old?.url
+
+            refreshReadingData(user.id, shouldRefreshSemantic)
           }
         )
         .subscribe((status: string) => {
@@ -200,6 +223,10 @@ export function ReadingListContent() {
 
   // Track bookmark open - only marks as opened, NOT as read
   const handleBookmarkOpen = async (bookmark: Bookmark) => {
+    if (isBookmarkMutationPending(bookmark.id)) {
+      return
+    }
+
     // Get auth token - try multiple methods
     const { data: { session } } = await supabase.auth.getSession()
 
@@ -216,94 +243,74 @@ export function ReadingListContent() {
       return
     }
 
-    fetch(`/api/bookmarks/${bookmark.id}/open`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-    })
-    .then((response) => {
-      if (response.ok) {
-        // On successful open, update the bookmark locally with last_opened_at
-        // This will remove it from neverOpened since isOldNeverOpened checks for last_opened_at
-        setBookmarks(prev => prev.map(b =>
-          b.id === bookmark.id
-            ? { ...b, last_opened_at: new Date().toISOString() }
-            : b
-        ))
-        // Remove from neverOpened state immediately
-        setNeverOpened(prev => prev.filter(b => b.id !== bookmark.id))
-      }
-    })
-    .catch(console.error)
+    markBookmarkOpenedMutation(bookmark.id, token)
+      .then((lastOpenedAt) => {
+        if (!lastOpenedAt) return
+
+        setBookmarks(prev => prev.map((item) => (
+          item.id === bookmark.id
+            ? { ...item, last_opened_at: lastOpenedAt }
+            : item
+        )))
+        setNeverOpened(prev => prev.filter((item) => item.id !== bookmark.id))
+      })
+      .catch(console.error)
 
     // Optimistically remove from neverOpened state immediately for better UX
     setNeverOpened(prev => prev.filter(b => b.id !== bookmark.id))
   }
 
   const toggleRead = async (bookmark: Bookmark) => {
-    // Remove from reading list (set is_read = true)
-    if (isGuest) {
-      try {
-        const storedBookmarks = guestStoreGet<Bookmark[]>(GUEST_KEYS.BOOKMARKS)
-        if (storedBookmarks) {
-          const updatedBookmarks = storedBookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_read: true } : b)
-          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedBookmarks)
-        }
-      } catch (e) { console.error('Error saving to localStorage:', e) }
-      setBookmarks(prev => prev.filter((b: Bookmark) => b.id !== bookmark.id))
-      setNeverOpened(prev => prev.filter((b: Bookmark) => b.id !== bookmark.id))
-      setSuggestions(prev => [{ ...bookmark, is_read: true }, ...prev])
+    if (isBookmarkMutationPending(bookmark.id)) {
       return
     }
-    await supabase.from('bookmarks').update({ is_read: true }).eq('id', bookmark.id)
+
+    // Remove from reading list (set is_read = true)
+    const updatedBookmark = await setBookmarkReadMutation(bookmark, true, { isGuest })
     setBookmarks(prev => prev.filter(b => b.id !== bookmark.id))
     setNeverOpened(prev => prev.filter(b => b.id !== bookmark.id))
     // Add back to suggestions immediately
-    setSuggestions(prev => [{ ...bookmark, is_read: true }, ...prev])
+    setSuggestions(prev => [{ ...updatedBookmark, is_read: true }, ...prev])
   }
 
   // Never opened count matches the neverOpened state length
-  const neverOpenedCount = neverOpened.length
+  const visibleBookmarks = useMemo(() => {
+    void bookmarkCacheVersion
+    return applyCachedBookmarks(bookmarks)
+  }, [applyCachedBookmarks, bookmarkCacheVersion, bookmarks])
+  const visibleNeverOpened = useMemo(() => {
+    void bookmarkCacheVersion
+    return applyCachedBookmarks(neverOpened)
+  }, [applyCachedBookmarks, bookmarkCacheVersion, neverOpened])
+  const visibleSuggestions = useMemo(() => {
+    void bookmarkCacheVersion
+    return applyCachedBookmarks(suggestions)
+  }, [applyCachedBookmarks, bookmarkCacheVersion, suggestions])
+  const visibleSemanticallyRelated = useMemo(() => {
+    void bookmarkCacheVersion
+    return applyCachedBookmarks(semanticallyRelated)
+  }, [applyCachedBookmarks, bookmarkCacheVersion, semanticallyRelated])
+  const neverOpenedCount = visibleNeverOpened.length
 
   const addToReadingList = async (bookmark: Bookmark) => {
-    // Add to reading list (set is_read = false)
-    if (isGuest) {
-      try {
-        const storedBookmarks = guestStoreGet<Bookmark[]>(GUEST_KEYS.BOOKMARKS)
-        if (storedBookmarks) {
-          const updatedBookmarks = storedBookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, is_read: false } : b)
-          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedBookmarks)
-        }
-      } catch (e) { console.error('Error saving to localStorage:', e) }
-      setBookmarks(prev => [{ ...bookmark, is_read: false }, ...prev])
-      setSuggestions(prev => prev.filter((b: Bookmark) => b.id !== bookmark.id))
-      setSemanticallyRelated(prev => prev.filter((b: Bookmark) => b.id !== bookmark.id))
+    if (isBookmarkMutationPending(bookmark.id)) {
       return
     }
-    await supabase.from('bookmarks').update({ is_read: false }).eq('id', bookmark.id)
-    // Update the bookmark object to reflect is_read: false before adding to state
-    setBookmarks(prev => [{ ...bookmark, is_read: false }, ...prev])
+
+    // Add to reading list (set is_read = false)
+    const updatedBookmark = await setBookmarkReadMutation(bookmark, false, { isGuest })
+    setBookmarks(prev => [{ ...updatedBookmark, is_read: false }, ...prev])
     setSuggestions(prev => prev.filter((b: Bookmark) => b.id !== bookmark.id))
     setSemanticallyRelated(prev => prev.filter(b => b.id !== bookmark.id))
   }
 
   const updateNotes = async (bookmark: Bookmark, notes: string) => {
-    if (isGuest) {
-      try {
-        const storedBookmarks = guestStoreGet<Bookmark[]>(GUEST_KEYS.BOOKMARKS)
-        if (storedBookmarks) {
-          const updatedBookmarks = storedBookmarks.map((b: Bookmark) => b.id === bookmark.id ? { ...b, notes } : b)
-          guestStoreSet(GUEST_KEYS.BOOKMARKS, updatedBookmarks)
-          setBookmarks(prev => prev.map((b: Bookmark) => b.id === bookmark.id ? { ...b, notes } : b))
-        }
-      } catch (e) { console.error('Error saving to localStorage:', e) }
-      setModalOpen(false)
+    if (isBookmarkMutationPending(bookmark.id)) {
       return
     }
-    await supabase.from('bookmarks').update({ notes }).eq('id', bookmark.id)
-    setBookmarks(prev => prev.map((b: Bookmark) => b.id === bookmark.id ? { ...b, notes } : b))
+
+    const updatedBookmark = await updateBookmarkNotesMutation(bookmark, notes, { isGuest })
+    setBookmarks(prev => prev.map((item: Bookmark) => item.id === bookmark.id ? updatedBookmark : item))
     setModalOpen(false)
   }
 
@@ -318,7 +325,7 @@ export function ReadingListContent() {
       <div className="grid grid-cols-2 gap-4">
         <Card>
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-blue-600">{bookmarks.length}</p>
+            <p className="text-2xl font-bold text-blue-600">{visibleBookmarks.length}</p>
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Items in Reading List</p>
           </CardContent>
         </Card>
@@ -342,10 +349,10 @@ export function ReadingListContent() {
       <div className="mt-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-            📖 Reading List ({bookmarks.length})
+            📖 Reading List ({visibleBookmarks.length})
           </h2>
         </div>
-        {bookmarks.length === 0 ? (
+        {visibleBookmarks.length === 0 ? (
           <Card>
             <CardContent className="p-8 text-center" style={{ color: 'var(--text-secondary)' }}>
               Your reading list is empty. Click the book icon on any bookmark to add it here!
@@ -353,7 +360,7 @@ export function ReadingListContent() {
           </Card>
         ) : (
           <div className="space-y-3">
-            {bookmarks.map(bookmark => (
+            {visibleBookmarks.map(bookmark => (
               <Card key={bookmark.id}>
                 <CardContent className="p-4">
                   <div className="flex gap-4">
@@ -427,7 +434,7 @@ export function ReadingListContent() {
           </button>
         </div>
         {showNeverOpened && (
-          neverOpened.length === 0 ? (
+          visibleNeverOpened.length === 0 ? (
             <Card>
               <CardContent className="p-8 text-center" style={{ color: 'var(--text-secondary)' }}>
                 No items that were never opened for over a week. Great job staying on top of your reading list!
@@ -435,7 +442,7 @@ export function ReadingListContent() {
             </Card>
           ) : (
             <div className="space-y-3">
-              {neverOpened.map(bookmark => (
+              {visibleNeverOpened.map(bookmark => (
                 <Card key={bookmark.id}>
                   <CardContent className="p-4">
                     <div className="flex gap-4">
@@ -502,7 +509,7 @@ export function ReadingListContent() {
       <div className="mt-8">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-            <span className="mr-2">🧠</span>Semantically Related {loadingSemantic ? '(Loading...)' : `(${semanticallyRelated.length})`}
+            <span className="mr-2">🧠</span>Semantically Related {loadingSemantic ? '(Loading...)' : `(${visibleSemanticallyRelated.length})`}
           </h2>
           <button
             onClick={() => setShowSemantic(!showSemantic)}
@@ -513,19 +520,19 @@ export function ReadingListContent() {
           </button>
         </div>
         {showSemantic && (
-          semanticallyRelated.length === 0 ? (
+          visibleSemanticallyRelated.length === 0 ? (
             <Card>
               <CardContent className="p-8 text-center" style={{ color: 'var(--text-secondary)' }}>
                 {loadingSemantic
                   ? 'Analyzing your reading list to find related content...'
-                  : bookmarks.length === 0
+                  : visibleBookmarks.length === 0
                     ? 'Add items to your reading list to get AI-powered recommendations!'
                     : 'No related content found. Try adding more bookmarks to your collection.'}
               </CardContent>
             </Card>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {semanticallyRelated.map(bookmark => (
+              {visibleSemanticallyRelated.map(bookmark => (
                 <Card key={bookmark.id} className="hover:shadow-md transition-all duration-200 hover:scale-[1.02]">
                   <CardContent className="p-4">
                     <a
@@ -565,7 +572,7 @@ export function ReadingListContent() {
       <div className="mt-8">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-            📚 Suggested for Reading List ({suggestions.length})
+            📚 Suggested for Reading List ({visibleSuggestions.length})
           </h2>
           <button
             onClick={() => setShowSuggestions(!showSuggestions)}
@@ -576,7 +583,7 @@ export function ReadingListContent() {
           </button>
         </div>
         {showSuggestions && (
-          suggestions.length === 0 ? (
+          visibleSuggestions.length === 0 ? (
             <Card>
               <CardContent className="p-8 text-center" style={{ color: 'var(--text-secondary)' }}>
                 No suggestions yet. As you read and mark items as complete, they&apos;ll appear here for you to rediscover.
@@ -584,7 +591,7 @@ export function ReadingListContent() {
             </Card>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {suggestions.map(bookmark => (
+              {visibleSuggestions.map(bookmark => (
                 <Card key={bookmark.id} className="hover:shadow-md transition-all duration-200 hover:scale-[1.02]">
                   <CardContent className="p-4">
                     <a

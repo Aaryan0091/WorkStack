@@ -4,6 +4,10 @@ import { useState, useMemo, memo, useEffect, useRef } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import { createBookmarkViaApi } from '@/lib/client-bookmark-api'
+import { useAiAvailabilityStore } from '@/lib/stores/ai-availability-store'
+import { useCollectionPickerStore } from '@/lib/stores/collection-picker-store'
+import { useBookmarkMutationsStore } from '@/lib/stores/bookmark-mutations-store'
+import { useBookmarkCacheStore } from '@/lib/stores/bookmark-cache-store'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -181,8 +185,18 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   const [bookmarkForCollection, setBookmarkForCollection] = useState<Bookmark | null>(null)
   const [selectedCollectionIds, setSelectedCollectionIds] = useState<Set<string>>(new Set())
   const [bookmarkCollectionMap, setBookmarkCollectionMap] = useState<Record<string, Set<string>>>({})
-  const [collections, setCollections] = useState<Array<{ id: string; name: string; description?: string | null; is_public: boolean }>>([])
-  const [collectionsLoading, setCollectionsLoading] = useState(false)
+  const collections = useCollectionPickerStore((state) => state.collections)
+  const collectionsLoading = useCollectionPickerStore((state) => state.loading)
+  const loadCollections = useCollectionPickerStore((state) => state.loadCollections)
+  const isBookmarkMutationPending = useBookmarkMutationsStore((state) => state.isPending)
+  const setBookmarkFavoriteMutation = useBookmarkMutationsStore((state) => state.setBookmarkFavorite)
+  const setBookmarkReadMutation = useBookmarkMutationsStore((state) => state.setBookmarkRead)
+  const deleteBookmarkMutation = useBookmarkMutationsStore((state) => state.deleteBookmark)
+  const hydrateCachedBookmarks = useBookmarkCacheStore((state) => state.hydrateBookmarks)
+
+  useEffect(() => {
+    hydrateCachedBookmarks(bookmarks, isGuest ? null : undefined)
+  }, [bookmarks, hydrateCachedBookmarks, isGuest])
 
   // Toast and confirm dialog state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null)
@@ -190,18 +204,16 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   const [, setPendingTabs] = useState<{ url: string; title: string }[] | null>(null)
 
   // AI tag suggestions state
-  const [aiEnabled, setAiEnabled] = useState(false)
+  const aiEnabled = useAiAvailabilityStore((state) => state.enabled)
+  const loadAiAvailability = useAiAvailabilityStore((state) => state.loadAiAvailability)
   const [isSuggesting, setIsSuggesting] = useState(false)
   const [aiSuggestedTagIds, setAiSuggestedTagIds] = useState<Set<string>>(new Set())
   const [aiSuggestions, setAiSuggestions] = useState<{ id: string; name: string; color: string; isNew: boolean }[]>([])
 
   // Check if AI is enabled on mount
   useEffect(() => {
-    fetch('/api/ai/suggest-tags')
-      .then((res) => res.json())
-      .then((data) => setAiEnabled(data.enabled))
-      .catch(() => setAiEnabled(false))
-  }, [])
+    loadAiAvailability().catch(() => {})
+  }, [loadAiAvailability])
 
   // Preload bookmark-collection relationships and collections list for instant modal opening
   useEffect(() => {
@@ -225,29 +237,17 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
       }
 
       // Preload collections list in parallel
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const token = (await supabase.auth.getSession()).data.session?.access_token
-        if (token) {
-          try {
-            const response = await fetch('/api/collections?all=true', {
-              headers: { 'Authorization': `Bearer ${token}` }
-            })
-            if (response.ok) {
-              const result = await response.json()
-              setCollections(result.collections || [])
-            }
-          } catch (error) {
-            if (process.env.NODE_ENV === 'development') {
-              console.error('Failed to preload collections:', error)
-            }
-          }
+      try {
+        await loadCollections()
+      } catch (error) {
+        if (process.env.NODE_ENV === 'development') {
+          console.error('Failed to preload collections:', error)
         }
       }
     }
 
     loadData()
-  }, [isGuest])
+  }, [isGuest, loadCollections])
 
   // Real-time subscription for bookmarks and tags (non-guest only)
   useEffect(() => {
@@ -502,11 +502,8 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
     const existingIds = bookmarkCollectionMap[bookmark.id] || new Set()
     setSelectedCollectionIds(new Set(existingIds))
 
-    // Show loading if collections aren't cached yet
+    // Show modal immediately and load collections if needed.
     const needsCollections = collections.length === 0
-    if (needsCollections) {
-      setCollectionsLoading(true)
-    }
 
     // Open modal immediately
     setCollectionModalOpen(true)
@@ -530,32 +527,13 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
         setSelectedCollectionIds(latestIds)
       }
 
-      // Fetch collections list if not cached
       if (needsCollections) {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (user) {
-          const token = (await supabase.auth.getSession()).data.session?.access_token
-          if (token) {
-            try {
-              const response = await fetch('/api/collections?all=true', {
-                headers: { 'Authorization': `Bearer ${token}` }
-              })
-              if (response.ok) {
-                const result = await response.json()
-                setCollections(result.collections || [])
-              }
-            } catch (error) {
-              if (process.env.NODE_ENV === 'development') {
-                console.error('Failed to fetch collections:', error)
-              }
-            } finally {
-              setCollectionsLoading(false)
-            }
-          } else {
-            setCollectionsLoading(false)
+        try {
+          await loadCollections()
+        } catch (error) {
+          if (process.env.NODE_ENV === 'development') {
+            console.error('Failed to fetch collections:', error)
           }
-        } else {
-          setCollectionsLoading(false)
         }
       }
     })()
@@ -629,25 +607,21 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
   }
 
   const handleFavorite = async (bookmark: Bookmark) => {
-    const updated = bookmarks.map(b => b.id === bookmark.id ? { ...b, is_favorite: !b.is_favorite } : b)
-
-    if (isGuest) {
-      saveGuestBookmarks(updated)
-    } else {
-      await supabase.from('bookmarks').update({ is_favorite: !bookmark.is_favorite }).eq('id', bookmark.id)
-      setBookmarks(updated)
+    if (isBookmarkMutationPending(bookmark.id)) {
+      return
     }
+
+    const updatedBookmark = await setBookmarkFavoriteMutation(bookmark, !bookmark.is_favorite, { isGuest })
+    setBookmarks((prev) => prev.map((item) => item.id === bookmark.id ? updatedBookmark : item))
   }
 
   const handleRead = async (bookmark: Bookmark) => {
-    const updated = bookmarks.map(b => b.id === bookmark.id ? { ...b, is_read: !b.is_read } : b)
-
-    if (isGuest) {
-      saveGuestBookmarks(updated)
-    } else {
-      await supabase.from('bookmarks').update({ is_read: !bookmark.is_read }).eq('id', bookmark.id)
-      setBookmarks(updated)
+    if (isBookmarkMutationPending(bookmark.id)) {
+      return
     }
+
+    const updatedBookmark = await setBookmarkReadMutation(bookmark, !bookmark.is_read, { isGuest })
+    setBookmarks((prev) => prev.map((item) => item.id === bookmark.id ? updatedBookmark : item))
   }
 
   const handleDelete = async (id: string) => {
@@ -657,14 +631,17 @@ export function BookmarksList({ initialBookmarks, initialTags, initialBookmarkTa
     setConfirmDialog({
       message: `Are you sure you want to delete "${bookmarkToDelete.title || bookmarkToDelete.url}"?`,
       onConfirm: async () => {
+        if (isBookmarkMutationPending(id)) {
+          setConfirmDialog(null)
+          return
+        }
+
         const updated = bookmarks.filter(b => b.id !== id)
 
-        if (isGuest) {
-          saveGuestBookmarks(updated)
-        } else {
-          await supabase.from('bookmarks').delete().eq('id', id)
-          setBookmarks(updated)
+        await deleteBookmarkMutation(id, { isGuest })
+        setBookmarks(updated)
 
+        if (!isGuest) {
           // Auto-cleanup unused tags in background with error handling
           try {
             const { data: usedTagIds, error: usedTagsError } = await supabase

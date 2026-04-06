@@ -31,6 +31,14 @@ export function ExtensionSync() {
           return
         }
 
+        const extensionId = getExtensionId()
+        if (!extensionId) {
+          if (isDev) {
+            console.log('[Extension Sync] Extension ID not available yet')
+          }
+          return
+        }
+
         // Use a more reliable timeout pattern
         const TIMEOUT_MS = 2000
         let timeoutId: NodeJS.Timeout | null = null
@@ -44,7 +52,7 @@ export function ExtensionSync() {
         }, TIMEOUT_MS)
 
         // Send message to extension
-        chrome.runtime?.sendMessage?.(getExtensionId() || '', {
+        chrome.runtime?.sendMessage?.(extensionId, {
           action: 'storeAuthToken',
           authToken: session.access_token,
           apiBaseUrl: window.location.origin
@@ -83,6 +91,14 @@ export function ExtensionSync() {
 
       if (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN' || event === 'USER_UPDATED') {
         if (session?.access_token) {
+          const extensionId = getExtensionId()
+          if (!extensionId) {
+            if (isDev) {
+              console.log('[Extension Sync] Skipping auth sync because extension ID is unavailable')
+            }
+            return
+          }
+
           const TIMEOUT_MS = 2000
           let timeoutId: NodeJS.Timeout | null = null
           let responseReceived = false
@@ -93,7 +109,7 @@ export function ExtensionSync() {
             }
           }, TIMEOUT_MS)
 
-          chrome.runtime?.sendMessage?.(getExtensionId() || '', {
+          chrome.runtime?.sendMessage?.(extensionId, {
             action: 'storeAuthToken',
             authToken: session.access_token,
             apiBaseUrl: window.location.origin

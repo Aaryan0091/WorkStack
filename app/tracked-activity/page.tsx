@@ -3,10 +3,11 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
+import { getExtensionId } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { Card, CardContent } from '@/components/ui/card'
 import type { TabActivity } from '@/lib/types'
+import { useExtensionStatusStore } from '@/lib/stores/extension-status-store'
 
 type TimeFilter = 'today' | 'week' | 'month' | 'all'
 
@@ -25,7 +26,9 @@ export default function TrackedActivityPage() {
   const [loading, setLoading] = useState(false)
   const [isTracking, setIsTracking] = useState(false)
   const [timeFilter, setTimeFilter] = useState<TimeFilter>('today')
-  const [extensionInstalled, setExtensionInstalled] = useState<boolean | null>(null)
+  const extensionInstalled = useExtensionStatusStore((state) => state.installed)
+  const ensureExtensionStatusListening = useExtensionStatusStore((state) => state.ensureListening)
+  const refreshExtensionInstalled = useExtensionStatusStore((state) => state.refreshInstalled)
 
   // Helper to generate better display titles
   const getDisplayTitle = (url: string, title: string) => {
@@ -146,16 +149,10 @@ export default function TrackedActivityPage() {
     }
   }
 
-  const checkExtensionStatus = () => {
-    if (typeof window !== 'undefined') {
-      const installed = isExtensionInstalledViaContentScript()
-      setExtensionInstalled(installed)
-    }
-  }
-
   useEffect(() => {
     getCurrentUser()
-    checkExtensionStatus()
+    ensureExtensionStatusListening()
+    refreshExtensionInstalled().catch(() => {})
     fetchActivities()
 
     // Re-fetch when tab becomes visible again (handles background tab throttling)

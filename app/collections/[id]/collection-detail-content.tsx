@@ -1,10 +1,13 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { updateCollectionViaApi, deleteCollectionViaApi } from '@/lib/client-collections-api'
+import { useCollectionPickerStore } from '@/lib/stores/collection-picker-store'
+import { useBookmarkMutationsStore } from '@/lib/stores/bookmark-mutations-store'
+import { useBookmarkCacheStore } from '@/lib/stores/bookmark-cache-store'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Modal } from '@/components/ui/modal'
@@ -27,6 +30,13 @@ interface CollectionBookmark extends Bookmark {
 
 export function CollectionDetailContent({ collectionId }: Props) {
   const router = useRouter()
+  const upsertPickerCollection = useCollectionPickerStore((state) => state.upsertCollection)
+  const removePickerCollection = useCollectionPickerStore((state) => state.removeCollection)
+  const isBookmarkMutationPending = useBookmarkMutationsStore((state) => state.isPending)
+  const setBookmarkFavoriteMutation = useBookmarkMutationsStore((state) => state.setBookmarkFavorite)
+  const hydrateCachedBookmarks = useBookmarkCacheStore((state) => state.hydrateBookmarks)
+  const applyCachedBookmarks = useBookmarkCacheStore((state) => state.applyBookmarks)
+  const bookmarkCacheVersion = useBookmarkCacheStore((state) => state.version)
   const [collection, setCollection] = useState<Collection | null>(null)
   const [bookmarks, setBookmarks] = useState<CollectionBookmark[]>([])
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
@@ -476,6 +486,9 @@ export function CollectionDetailContent({ collectionId }: Props) {
     }
 
     setCollection(newCollection || null)
+    if (newCollection.user_id === user.id) {
+      upsertPickerCollection(newCollection)
+    }
     if (!newCollection) {
       bookmarkIdsRef.current = new Set()
       bookmarksCountRef.current = 0
@@ -788,19 +801,19 @@ export function CollectionDetailContent({ collectionId }: Props) {
   }
 
   const toggleFavorite = async (bookmarkId: string, currentStatus: boolean) => {
-    const newStatus = !currentStatus
+    if (isBookmarkMutationPending(bookmarkId)) {
+      return
+    }
 
-    // Optimistically update UI immediately
-    const updatedBookmarks = bookmarks.map(b =>
-      b.id === bookmarkId ? { ...b, is_favorite: newStatus } : b
-    )
-    setBookmarks(updatedBookmarks)
+    const bookmark = bookmarks.find((item) => item.id === bookmarkId)
+    if (!bookmark) return
 
-    // Update in background - no user check needed, favorites are per-bookmark
-    await supabase
-      .from('bookmarks')
-      .update({ is_favorite: newStatus })
-      .eq('id', bookmarkId)
+    const updatedBookmark = await setBookmarkFavoriteMutation(bookmark, !currentStatus, { isGuest: false })
+    setBookmarks((prev) => prev.map((item) => item.id === bookmarkId ? {
+      ...item,
+      ...updatedBookmark,
+      added_by: item.added_by,
+    } : item))
   }
 
   const openDeleteModal = () => {
@@ -818,6 +831,9 @@ export function CollectionDetailContent({ collectionId }: Props) {
     setActionLoading(true)
     try {
       await deleteCollectionViaApi(collection.id)
+      if (collection.user_id === currentUserId) {
+        removePickerCollection(collection.id)
+      }
       setDeleteModalOpen(false)
       router.push('/collections')
     } catch (error) {
@@ -887,6 +903,9 @@ export function CollectionDetailContent({ collectionId }: Props) {
       })
 
       setCollection(data)
+      if (data.user_id === currentUserId) {
+        upsertPickerCollection(data)
+      }
       if (fromEditModal) {
         setEditModalOpen(false)
       }
@@ -921,14 +940,23 @@ export function CollectionDetailContent({ collectionId }: Props) {
     setPendingVisibilityChange(null)
   }
 
+  useEffect(() => {
+    hydrateCachedBookmarks(bookmarks, currentUserId)
+  }, [bookmarks, currentUserId, hydrateCachedBookmarks])
+
+  const visibleBookmarks = useMemo(() => {
+    void bookmarkCacheVersion
+    return applyCachedBookmarks(bookmarks) as CollectionBookmark[]
+  }, [applyCachedBookmarks, bookmarkCacheVersion, bookmarks])
+
   // Filter bookmarks by search query
   const filteredBookmarks = collectionSearchQuery
-    ? bookmarks.filter(b =>
+    ? visibleBookmarks.filter(b =>
         b.title?.toLowerCase().includes(collectionSearchQuery.toLowerCase()) ||
         b.url?.toLowerCase().includes(collectionSearchQuery.toLowerCase()) ||
         b.description?.toLowerCase().includes(collectionSearchQuery.toLowerCase())
       )
-    : bookmarks
+    : visibleBookmarks
 
   const toggleBookmarkSelection = (bookmarkId: string) => {
     const newSelection = new Set(selectedBookmarkIds)
@@ -942,17 +970,17 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const toggleSelectAll = () => {
-    if (selectedBookmarkIds.size === bookmarks.length) {
+    if (selectedBookmarkIds.size === visibleBookmarks.length) {
       // Deselect all
       setSelectedBookmarkIds(new Set())
     } else {
       // Select all
-      setSelectedBookmarkIds(new Set(bookmarks.map(b => b.id)))
+      setSelectedBookmarkIds(new Set(visibleBookmarks.map(b => b.id)))
     }
   }
 
   const selectAll = () => {
-    setSelectedBookmarkIds(new Set(bookmarks.map(b => b.id)))
+    setSelectedBookmarkIds(new Set(visibleBookmarks.map(b => b.id)))
   }
 
   const deselectAll = () => {
@@ -960,7 +988,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
   }
 
   const openSelectedTabs = async () => {
-    const selectedBookmarks = bookmarks.filter(b => selectedBookmarkIds.has(b.id))
+    const selectedBookmarks = visibleBookmarks.filter(b => selectedBookmarkIds.has(b.id))
     const urls = selectedBookmarks.map(b => b.url)
 
     // Try using the extension first (bypasses popup blockers)
@@ -1209,16 +1237,16 @@ export function CollectionDetailContent({ collectionId }: Props) {
             )}
             <div className="flex items-center gap-2 mt-1">
               <p>
-                {bookmarks.length} bookmark{bookmarks.length !== 1 ? 's' : ''}
+                {visibleBookmarks.length} bookmark{visibleBookmarks.length !== 1 ? 's' : ''}
               </p>
-              {bookmarks.length > 0 && !selectionMode && canManageCollection && (
+              {visibleBookmarks.length > 0 && !selectionMode && canManageCollection && (
                 <Button variant="secondary" onClick={() => setSelectionMode(true)} className="text-sm py-1.5 px-3">
                   Select
                 </Button>
               )}
               {selectionMode && (
                 <>
-                  {selectedBookmarkIds.size < bookmarks.length && (
+                  {selectedBookmarkIds.size < visibleBookmarks.length && (
                     <Button variant="secondary" onClick={selectAll} className="text-sm py-1.5 px-3">
                       Select All
                     </Button>
@@ -1244,7 +1272,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
       </div>
 
       {/* Search Bar */}
-      {bookmarks.length > 0 && (
+      {visibleBookmarks.length > 0 && (
         <div className="relative">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5" style={{ color: 'var(--text-secondary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <circle cx="11" cy="11" r={8} strokeWidth={2} />
@@ -1268,7 +1296,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
       )}
 
       {/* Bookmarks List */}
-      {bookmarks.length === 0 ? (
+      {visibleBookmarks.length === 0 ? (
         <Card>
           <CardContent className="p-12 text-center" style={{ color: 'var(--text-secondary)' }}>
             No bookmarks in this collection yet.

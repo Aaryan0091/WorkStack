@@ -34,6 +34,12 @@
       type: 'workstack-extension-installed',
       extensionId: extensionId
     }, '*')
+    window.dispatchEvent(new CustomEvent('workstack-extension-loaded', {
+      detail: {
+        installed: true,
+        extensionId: extensionId
+      }
+    }))
   }
 
   // Announce immediately

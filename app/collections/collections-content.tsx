@@ -18,6 +18,8 @@ import {
   GUEST_KEYS,
   markGuestMode
 } from '@/lib/guest-storage'
+import { useCollectionPickerStore } from '@/lib/stores/collection-picker-store'
+import { useAccessibleCollectionsStore } from '@/lib/stores/accessible-collections-store'
 import { generateUUID } from '@/lib/utils'
 
 // Cache for faster loads
@@ -39,6 +41,11 @@ interface CollectionsContentProps {
 export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsContentProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const hydratePickerCollections = useCollectionPickerStore((state) => state.hydrateCollections)
+  const hydrateAccessibleCollections = useAccessibleCollectionsStore((state) => state.hydrateCollections)
+  const addPickerCollection = useCollectionPickerStore((state) => state.addCollection)
+  const upsertPickerCollection = useCollectionPickerStore((state) => state.upsertCollection)
+  const removePickerCollection = useCollectionPickerStore((state) => state.removeCollection)
   const [collections, setCollections] = useState<Collection[]>([])
   const [collectionBookmarks, setCollectionBookmarks] = useState<Record<string, Bookmark[]>>({})
   const [collectionBookmarkCounts, setCollectionBookmarkCounts] = useState<Record<string, number>>({})
@@ -105,6 +112,16 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   const refreshCollectionsTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const getPrivateEditMessage = () => 'You are not allowed to make edits in this private collection. Ask the owner to make the collection public first.'
+
+  useEffect(() => {
+    hydratePickerCollections(collections)
+  }, [collections, hydratePickerCollections])
+
+  useEffect(() => {
+    if (!isGuest && currentUserId) {
+      hydrateAccessibleCollections(collections, { viewerId: currentUserId })
+    }
+  }, [collections, currentUserId, hydrateAccessibleCollections, isGuest])
 
   const buildCollectionBookmarkState = async (collectionsToBuild: Collection[], userId: string) => {
     const collectionIds = collectionsToBuild.map((collection) => collection.id)
@@ -674,6 +691,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       collectionsCache.timestamp = 0
 
       setCollections([data[0], ...collections])
+      addPickerCollection(data[0])
       setCollectionRoles(prev => ({ ...prev, [data[0].id]: 'owner' }))
       setModalOpen(false)
       setFormData({ name: '', description: '', is_public: false })
@@ -709,6 +727,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     collectionsCache.timestamp = 0
 
     setCollections(collections.filter(c => c.id !== id))
+    removePickerCollection(id)
     setDeleteModalOpen(false)
     setCollectionToDelete(null)
     setActionLoading(false)
@@ -755,6 +774,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       collectionsCache.timestamp = 0
 
       setCollections(collections.map(c => c.id === collection.id ? updatedCollection : c))
+      upsertPickerCollection(updatedCollection)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update collection visibility'
       showToastMessage(message, 'error')
@@ -816,6 +836,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       collectionsCache.timestamp = 0
 
       setCollections(collections.map(c => c.id === editingCollection.id ? data : c))
+      upsertPickerCollection(data)
       setEditModalOpen(false)
       setEditingCollection(null)
       setFormData({ name: '', description: '', is_public: false })
@@ -889,6 +910,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       collectionsCache.timestamp = 0
 
       setCollections([newCollection, ...collections])
+      addPickerCollection(newCollection)
       setCollectionRoles(prev => ({ ...prev, [newCollection.id]: 'owner' }))
     }
 
@@ -943,6 +965,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
 
       // Remove from collections state
       setCollections(collections.filter(c => c.id !== collection.id))
+      removePickerCollection(collection.id)
 
       setToast({ message: 'Collection removed from your view', type: 'success' })
       setTimeout(() => setToast(null), 2000)
@@ -1039,6 +1062,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
     collectionsCache.timestamp = 0
 
     setCollections(collections.filter(c => c.id !== collectionToMerge.id))
+    removePickerCollection(collectionToMerge.id)
     setMergeModalOpen(false)
     setCollectionToMerge(null)
     setMergeTargetCollectionId('')
