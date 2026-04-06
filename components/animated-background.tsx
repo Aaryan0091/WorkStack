@@ -11,11 +11,11 @@ export function AnimatedBackground() {
 
     // Create multiple blob elements
     const blobs = [
-      { color: 'var(--color-teal)', size: 400, duration: 25, delay: 0 },
-      { color: 'var(--color-purple)', size: 350, duration: 30, delay: -5 },
-      { color: 'var(--color-pink)', size: 300, duration: 35, delay: -10 },
-      { color: 'var(--color-amber)', size: 380, duration: 28, delay: -15 },
-      { color: 'var(--color-sky)', size: 320, duration: 32, delay: -8 },
+      { color: 'var(--color-teal)', size: 400, duration: 10, delay: 0 },
+      { color: 'var(--color-purple)', size: 350, duration: 12, delay: -5 },
+      { color: 'var(--color-pink)', size: 300, duration: 15, delay: -10 },
+      { color: 'var(--color-amber)', size: 380, duration: 11, delay: -15 },
+      { color: 'var(--color-sky)', size: 320, duration: 14, delay: -8 },
     ]
 
     blobs.forEach((blob) => {

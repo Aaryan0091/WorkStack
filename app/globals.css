@@ -84,9 +84,9 @@ h1, h2, h3, h4, h5, h6 {
     transition-duration: 0.01ms !important;
   }
 
-  /* Allow background animation to continue even with reduced motion */
-  .fixed.-z-10 > div {
-    animation-duration: 25s, 30s, 35s, 28s, 32s !important;
+/* Allow background animation to continue even with reduced motion */
+  .animated-blob {
+    animation-duration: 30s !important;
     animation-iteration-count: infinite !important;
   }
 }
@@ -147,26 +147,26 @@ img {
     transform: translate(0, 0) scale(1);
   }
   25% {
-    transform: translate(100px, -50px) scale(1.1);
+    transform: translate(250px, -150px) scale(1.15);
   }
   50% {
-    transform: translate(50px, 100px) scale(0.9);
+    transform: translate(150px, 250px) scale(0.85);
   }
   75% {
-    transform: translate(-50px, 50px) scale(1.05);
+    transform: translate(-200px, 150px) scale(1.1);
   }
 }
 
 /* Animated blob class */
 .animated-blob {
-  position: absolute !important;
-  width: 400px !important;
-  height: 400px !important;
-  border-radius: 50% !important;
-  filter: blur(80px) !important;
-  opacity: 0.4 !important;
-  animation: float 25s ease-in-out infinite !important;
-  will-change: transform !important;
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.4;
+  animation-name: float;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  will-change: transform;
 }
 
 /* Sidebar glass effect */
