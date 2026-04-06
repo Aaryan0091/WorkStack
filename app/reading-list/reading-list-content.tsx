@@ -37,13 +37,25 @@ function formatTimeSince(dateString: string): string {
   return `Added ${years} year${years > 1 ? 's' : ''} ago`
 }
 
-// Check if bookmark is more than a week old and never opened
-function isOldNeverOpened(bookmark: Bookmark): boolean {
-  if (bookmark.last_opened_at) return false
-  const now = new Date()
-  const created = new Date(bookmark.created_at)
-  const diffDays = Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24))
-  return diffDays >= 7
+// Check if bookmark has never been opened
+function isNeverOpened(bookmark: Bookmark): boolean {
+  return !bookmark.last_opened_at
+}
+
+const SEMANTIC_RECOMMENDATION_CACHE_VERSION = 'v2'
+
+function buildSemanticCacheKey(userId: string, readingList: Bookmark[]): string {
+  const signature = readingList
+    .map((bookmark) => [
+      bookmark.id,
+      bookmark.title || '',
+      bookmark.description || '',
+      bookmark.url,
+      bookmark.is_read ? '1' : '0'
+    ].join('|'))
+    .join('::')
+
+  return `workstack_semantic_related_${SEMANTIC_RECOMMENDATION_CACHE_VERSION}_${userId}_${signature}`
 }
 
 export function ReadingListContent() {
@@ -105,7 +117,7 @@ export function ReadingListContent() {
 
       if (mounted && readingList) {
         setBookmarks(readingList)
-        setNeverOpened(readingList.filter(isOldNeverOpened))
+        setNeverOpened(readingList.filter(isNeverOpened))
       }
 
       // Fetch suggestions - bookmarks that are read but could be re-added (most recent)
@@ -122,7 +134,7 @@ export function ReadingListContent() {
       }
 
       if (includeSemantic && mounted) {
-        await fetchSemanticRecommendations()
+        await fetchSemanticRecommendations(userId, readingList || [])
       }
     }
 
@@ -139,7 +151,7 @@ export function ReadingListContent() {
           if (storedBookmarks.length > 0) {
             const readingList = storedBookmarks.filter((b: Bookmark) => !b.is_read)
             setBookmarks(readingList)
-            setNeverOpened(readingList.filter(isOldNeverOpened))
+            setNeverOpened(readingList.filter(isNeverOpened))
             setSuggestions(storedBookmarks.filter((b: Bookmark) => b.is_read).slice(0, 6))
           }
         } catch (e) {
@@ -190,7 +202,23 @@ export function ReadingListContent() {
     }
   }, [])
 
-  const fetchSemanticRecommendations = async () => {
+  const fetchSemanticRecommendations = async (userId: string, readingList: Bookmark[]) => {
+    if (readingList.length === 0) {
+      setSemanticallyRelated([])
+      return
+    }
+
+    const cacheKey = buildSemanticCacheKey(userId, readingList)
+    const cachedRecommendationsRaw = sessionStorage.getItem(cacheKey)
+    if (cachedRecommendationsRaw) {
+      try {
+        const parsed = JSON.parse(cachedRecommendationsRaw) as Bookmark[]
+        setSemanticallyRelated(parsed)
+      } catch {
+        sessionStorage.removeItem(cacheKey)
+      }
+    }
+
     setLoadingSemantic(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
@@ -212,7 +240,15 @@ export function ReadingListContent() {
 
       if (response.ok) {
         const data = await response.json()
-        setSemanticallyRelated(data.recommendations || [])
+        const recommendations = data.recommendations || []
+
+        if (recommendations.length > 0) {
+          setSemanticallyRelated(recommendations)
+          sessionStorage.setItem(cacheKey, JSON.stringify(recommendations))
+        } else {
+          setSemanticallyRelated([])
+          sessionStorage.removeItem(cacheKey)
+        }
       }
     } catch (error) {
       console.error('Failed to fetch recommendations:', error)
@@ -332,7 +368,7 @@ export function ReadingListContent() {
         <Card>
           <CardContent className="p-4 text-center">
             <p className="text-2xl font-bold text-amber-600">{neverOpenedCount}</p>
-            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Never Opened (1+ week)</p>
+            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>Never Opened</p>
           </CardContent>
         </Card>
       </div>
@@ -437,7 +473,7 @@ export function ReadingListContent() {
           visibleNeverOpened.length === 0 ? (
             <Card>
               <CardContent className="p-8 text-center" style={{ color: 'var(--text-secondary)' }}>
-                No items that were never opened for over a week. Great job staying on top of your reading list!
+                No items in your reading list are still unopened.
               </CardContent>
             </Card>
           ) : (
@@ -527,7 +563,7 @@ export function ReadingListContent() {
                   ? 'Analyzing your reading list to find related content...'
                   : visibleBookmarks.length === 0
                     ? 'Add items to your reading list to get AI-powered recommendations!'
-                    : 'No related content found. Try adding more bookmarks to your collection.'}
+                    : 'No related content found yet. Try adding a few more related bookmarks.'}
               </CardContent>
             </Card>
           ) : (

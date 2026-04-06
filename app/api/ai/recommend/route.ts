@@ -24,6 +24,9 @@ interface ScoredBookmark extends Bookmark {
   _score: number
   _matchedQueries: number
   _exactMatches: number
+  _contentPhraseMatches: number
+  _mediaTitleOverlap: number
+  _sourceAnchorMatches: number
   _strongWordMatches: number
 }
 
@@ -32,6 +35,17 @@ const GENERIC_QUERY_TERMS = new Set([
   'reference', 'resource', 'site', 'song', 'soundtrack', 'title', 'tool',
   'tools', 'track', 'tutorial', 'video', 'website', 'youtube'
 ])
+
+const SEMANTIC_STOP_WORDS = new Set([
+  ...GENERIC_QUERY_TERMS,
+  'about', 'after', 'before', 'best', 'build', 'building', 'click', 'com',
+  'course', 'from', 'have', 'http', 'https', 'into', 'just', 'learn',
+  'lesson', 'more', 'page', 'read', 'that', 'them', 'there', 'these',
+  'this', 'through', 'tips', 'watch', 'what', 'when', 'where', 'which',
+  'with', 'www', 'your'
+])
+
+const MEDIA_HOSTS = new Set(['youtube', 'youtu', 'vimeo'])
 
 function normalizeSemanticQuery(query: string): string | null {
   const normalized = query
@@ -120,6 +134,136 @@ function hasStrongWordMatch(words: Set<string>, queryWord: string): boolean {
 
   return false
 }
+
+function isUsefulSemanticToken(token: string): boolean {
+  return token.length >= 4 && !SEMANTIC_STOP_WORDS.has(token) && !/^\d+$/.test(token)
+}
+
+function buildReadingListFallbackQueries(readingList: Bookmark[]): string[] {
+  const tokenCounts = new Map<string, number>()
+  const phraseCounts = new Map<string, number>()
+
+  for (const bookmark of readingList) {
+    const textParts = [
+      bookmark.title || '',
+      bookmark.description || '',
+      bookmark.url || ''
+    ]
+
+    const bookmarkTokens = new Set<string>()
+    const bookmarkPhrases = new Set<string>()
+
+    for (const text of textParts) {
+      const tokens = tokenizeSemanticText(text).filter(isUsefulSemanticToken)
+
+      for (const token of tokens) {
+        bookmarkTokens.add(token)
+      }
+
+      for (let index = 0; index < tokens.length - 1; index += 1) {
+        const first = tokens[index]
+        const second = tokens[index + 1]
+
+        if (!first || !second) continue
+
+        const phrase = `${first} ${second}`
+        bookmarkPhrases.add(phrase)
+      }
+    }
+
+    for (const token of bookmarkTokens) {
+      tokenCounts.set(token, (tokenCounts.get(token) || 0) + 1)
+    }
+
+    for (const phrase of bookmarkPhrases) {
+      phraseCounts.set(phrase, (phraseCounts.get(phrase) || 0) + 1)
+    }
+  }
+
+  const topPhrases = [...phraseCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 6)
+    .map(([phrase]) => phrase)
+
+  const topTokens = [...tokenCounts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 8)
+    .map(([token]) => token)
+
+  return sanitizeSemanticQueries([...topPhrases, ...topTokens])
+}
+
+function buildSourceSemanticTokenSets(readingList: Bookmark[]): Set<string>[] {
+  return readingList.map((bookmark) => {
+    const text = [
+      bookmark.title || '',
+      bookmark.description || '',
+      bookmark.url || ''
+    ].join(' ')
+
+    return new Set(tokenizeSemanticText(text).filter(isUsefulSemanticToken))
+  })
+}
+
+function countSourceAnchorMatches(
+  candidateWords: Set<string>,
+  sourceTokenSets: Set<string>[]
+): number {
+  let bestMatchCount = 0
+
+  for (const sourceTokens of sourceTokenSets) {
+    let overlap = 0
+
+    for (const word of candidateWords) {
+      if (sourceTokens.has(word)) {
+        overlap += 1
+      }
+    }
+
+    if (overlap > bestMatchCount) {
+      bestMatchCount = overlap
+    }
+  }
+
+  return bestMatchCount
+}
+
+function getDomainRoot(url: string): string | null {
+  try {
+    const hostname = new URL(url).hostname.replace(/^www\./, '')
+    const parts = hostname.split('.').filter(Boolean)
+    if (parts.length >= 2) {
+      return parts[parts.length - 2] || null
+    }
+    return parts[0] || null
+  } catch {
+    return null
+  }
+}
+
+function getMediaTitleTokens(bookmark: Bookmark): Set<string> {
+  const titleTokens = tokenizeSemanticText(bookmark.title || '')
+  return new Set(
+    titleTokens.filter((token) =>
+      token.length >= 3 &&
+      !GENERIC_QUERY_TERMS.has(token) &&
+      !SEMANTIC_STOP_WORDS.has(token) &&
+      !/^\d+$/.test(token)
+    )
+  )
+}
+
+function countTokenOverlap(first: Set<string>, second: Set<string>): number {
+  let overlap = 0
+
+  for (const token of first) {
+    if (second.has(token)) {
+      overlap += 1
+    }
+  }
+
+  return overlap
+}
 export async function OPTIONS(request: NextRequest) {
   return handleOptionsRequest(request)
 }
@@ -185,8 +329,11 @@ export async function POST(request: NextRequest) {
       return corsHeaders(response, request)
     }
 
-    // 2. Build context from reading list
-    const contextText = readingList
+    const seedBookmarks = readingList.slice(0, 1)
+
+    // 2. Build context from the newest unread item so mixed-topic reading lists
+    // do not pull in unrelated recommendations from older entries.
+    const contextText = seedBookmarks
       .map(b => `Title: ${b.title}\nURL: ${b.url}\nDescription: ${b.description || 'N/A'}`)
       .join('\n\n---\n\n')
 
@@ -234,7 +381,7 @@ Now extract semantic queries from this reading list:`
       const aiResponse = await groq.chat.completions.create({
         model: 'llama-3.1-8b-instant',
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.5, // Increased for more creative/semantic associations
+        temperature: 0.2,
         max_tokens: 300, // Increased to allow for more queries
         response_format: { type: 'json_object' },
       })
@@ -246,7 +393,9 @@ Now extract semantic queries from this reading list:`
       }
 
       const parsed = JSON.parse(content)
-      const queries = sanitizeSemanticQueries(parsed.queries || [])
+      const aiQueries = sanitizeSemanticQueries(parsed.queries || [])
+      const fallbackQueries = buildReadingListFallbackQueries(seedBookmarks)
+      const queries = sanitizeSemanticQueries([...aiQueries, ...fallbackQueries])
 
       if (queries.length === 0) {
         const response = NextResponse.json({ recommendations: [] })
@@ -255,6 +404,9 @@ Now extract semantic queries from this reading list:`
 
       // 4. Search for bookmarks matching these queries (excluding current reading list)
       const readingListIds = readingList.map(b => b.id)
+      const sourceTokenSets = buildSourceSemanticTokenSets(seedBookmarks)
+      const seedDomains = new Set(seedBookmarks.map((bookmark) => getDomainRoot(bookmark.url)).filter(Boolean))
+      const seedMediaTitleTokens = seedBookmarks.map(getMediaTitleTokens)
 
       // Get all other bookmarks (filter in JS to avoid Supabase syntax issues)
       const { data: allBookmarks } = await supabase
@@ -270,6 +422,7 @@ Now extract semantic queries from this reading list:`
         let score = 0
         const matchedQueries = new Set<string>()
         let exactMatches = 0
+        let contentPhraseMatches = 0
         let strongWordMatches = 0
         const titleLower = (bookmark.title || '').toLowerCase()
         const descLower = (bookmark.description || '').toLowerCase()
@@ -277,6 +430,24 @@ Now extract semantic queries from this reading list:`
         const titleWords = new Set(tokenizeSemanticText(titleLower))
         const descWords = new Set(tokenizeSemanticText(descLower))
         const urlWords = new Set(tokenizeSemanticText(urlLower))
+        const candidateWords = new Set([
+          ...titleWords,
+          ...descWords,
+          ...urlWords,
+        ].filter(isUsefulSemanticToken))
+        const sourceAnchorMatches = countSourceAnchorMatches(candidateWords, sourceTokenSets)
+        const candidateDomain = getDomainRoot(bookmark.url)
+        const candidateMediaTitleTokens = getMediaTitleTokens(bookmark)
+        const mediaTitleOverlap = (
+          candidateDomain &&
+          seedDomains.has(candidateDomain) &&
+          MEDIA_HOSTS.has(candidateDomain)
+        )
+          ? Math.max(
+            ...seedMediaTitleTokens.map((tokens) => countTokenOverlap(tokens, candidateMediaTitleTokens)),
+            0
+          )
+          : 0
 
         for (const query of queries) {
           const queryLower = query.toLowerCase()
@@ -289,10 +460,12 @@ Now extract semantic queries from this reading list:`
           if (hasDelimitedPhrase(titleLower, queryLower)) {
             score += 14
             exactMatches += 1
+            contentPhraseMatches += 1
             queryMatched = true
           }
           if (hasDelimitedPhrase(descLower, queryLower)) {
             score += 8
+            contentPhraseMatches += 1
             queryMatched = true
           }
           if (!queryMatched && hasDelimitedPhrase(urlLower, queryLower)) {
@@ -330,23 +503,43 @@ Now extract semantic queries from this reading list:`
           _score: score,
           _matchedQueries: matchedQueries.size,
           _exactMatches: exactMatches,
+          _contentPhraseMatches: contentPhraseMatches,
+          _mediaTitleOverlap: mediaTitleOverlap,
+          _sourceAnchorMatches: sourceAnchorMatches,
           _strongWordMatches: strongWordMatches,
         }
       })
 
       // Filter and sort by score - return up to 12 recommendations
-      const recommendations = scoredBookmarks
+      const strictRecommendations = scoredBookmarks
         .filter((bookmark: ScoredBookmark) => {
           if (bookmark._score < 6) return false
+          if (bookmark._mediaTitleOverlap >= 1) return true
+          if (bookmark._sourceAnchorMatches < 1) return false
           if (bookmark._exactMatches > 0 && bookmark._strongWordMatches > 0) return true
+          if (bookmark._contentPhraseMatches > 0 && bookmark._score >= 8) return true
           if (bookmark._matchedQueries >= 2) return true
-          if (bookmark._strongWordMatches >= 3) return true
+          if (bookmark._strongWordMatches >= 3 && bookmark._sourceAnchorMatches >= 2) return true
           return false
         })
         .sort((a: ScoredBookmark, b: ScoredBookmark) => b._score - a._score)
         .slice(0, 12)
+
+      const fallbackRecommendations = scoredBookmarks
+        .filter((bookmark: ScoredBookmark) => {
+          if (bookmark._mediaTitleOverlap >= 1) return true
+          if (bookmark._score < 4) return false
+          if (bookmark._sourceAnchorMatches < 2) return false
+          if (bookmark._contentPhraseMatches > 0) return true
+          if (bookmark._strongWordMatches >= 2) return true
+          return bookmark._matchedQueries >= 1 && bookmark._sourceAnchorMatches >= 2
+        })
+        .sort((a: ScoredBookmark, b: ScoredBookmark) => b._score - a._score)
+        .slice(0, 8)
+
+      const recommendations = (strictRecommendations.length > 0 ? strictRecommendations : fallbackRecommendations)
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        .map(({ _score, _matchedQueries, _exactMatches, _strongWordMatches, ...bookmark }) => bookmark)
+        .map(({ _score, _matchedQueries, _exactMatches, _contentPhraseMatches, _mediaTitleOverlap, _sourceAnchorMatches, _strongWordMatches, ...bookmark }) => bookmark)
 
       const response = NextResponse.json({
         recommendations,
