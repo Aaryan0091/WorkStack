@@ -80,7 +80,7 @@ export const GET = withApiHandler(async (request: NextRequest) => {
 })
 
 // PUT - Update collection sharing settings
-export const PUT = withApiHandler(async (request: NextRequest, context?: { params: Promise<{ id: string }> }) => {
+export const PUT = withApiHandler(async (request: NextRequest, context: { params: Promise<{ id: string }> }) => {
   const authHeader = request.headers.get('Authorization')
   const user = await getUserFromToken(authHeader)
 
@@ -89,7 +89,7 @@ export const PUT = withApiHandler(async (request: NextRequest, context?: { param
   }
 
   // In Next.js 16, params is a Promise
-  const params = await context?.params
+  const params = await context.params
   const collectionId = params?.id || ''
 
   const body = await request.json()
@@ -137,4 +137,3 @@ export const PUT = withApiHandler(async (request: NextRequest, context?: { param
     shareUrl: is_public ? `${request.nextUrl.origin}/shared/${data.share_slug}` : null
   }, 'Collection sharing updated'), request)
 })
-

@@ -7,7 +7,7 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
 interface SharedCollectionPageProps {
-  params: { slug: string }
+  params: Promise<{ slug: string }>
 }
 
 async function getSharedCollection(slug: string) {
@@ -47,7 +47,8 @@ async function getSharedCollection(slug: string) {
 }
 
 export async function generateMetadata({ params }: SharedCollectionPageProps) {
-  const data = await getSharedCollection(params.slug)
+  const { slug } = await params
+  const data = await getSharedCollection(slug)
 
   if (!data) {
     return {
@@ -64,7 +65,8 @@ export async function generateMetadata({ params }: SharedCollectionPageProps) {
 }
 
 export default async function SharedCollectionPage({ params }: SharedCollectionPageProps) {
-  const data = await getSharedCollection(params.slug)
+  const { slug } = await params
+  const data = await getSharedCollection(slug)
 
   if (!data) {
     notFound()

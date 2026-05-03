@@ -110,6 +110,12 @@ interface SupabaseError {
 /**
  * Wrap API route handlers with try-catch and consistent error handling
  */
+export function withApiHandler<T extends NextRequest = NextRequest>(
+  handler: (req: T) => Promise<NextResponse>
+): (req: T) => Promise<NextResponse>
+export function withApiHandler<T extends NextRequest = NextRequest, C = unknown>(
+  handler: (req: T, context: C) => Promise<NextResponse>
+): (req: T, context: C) => Promise<NextResponse>
 export function withApiHandler<T extends NextRequest = NextRequest, C = unknown>(
   handler: (req: T, context?: C) => Promise<NextResponse>
 ) {
@@ -283,4 +289,3 @@ export async function requireAuth(request: NextRequest): Promise<User> {
   }
   return user
 }
-

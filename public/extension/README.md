@@ -3,7 +3,7 @@
 ## Step 2 Complete!
 
 Extension files have been created in:
-`/Users/aaryangupta/Desktop/workstack-extension/`
+`/Users/aaryangupta/Desktop/workstack/workstack-extension/`
 
 ### Files Created:
 - ✅ `manifest.json` - Extension configuration
@@ -26,7 +26,7 @@ Extension files have been created in:
 1. Open Chrome and go to `chrome://extensions/`
 2. Toggle "Developer mode" (top right)
 3. Click "Load unpacked"
-4. Select this folder: `/Users/aaryangupta/Desktop/workstack-extension/`
+4. Select this folder: `/Users/aaryangupta/Desktop/workstack/workstack-extension/`
 5. **Copy the Extension ID** shown below the extension name
 
 ### 3c. Tell Me the Extension ID
