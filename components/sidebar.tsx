@@ -15,6 +15,8 @@ import {
   Tag,
   LogOut,
   Menu,
+  UserPlus,
+  ArrowRight,
 } from 'lucide-react'
 
 interface NavItem {
@@ -305,15 +307,59 @@ export function Sidebar() {
         ) : (
           <Link
             href="/login"
-            className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl w-full text-sm font-medium transition-all duration-200"
+            className={`group flex items-center transition-all duration-200 ${
+              isCollapsed
+                ? 'justify-center w-12 h-12 mx-auto rounded-full'
+                : 'w-full gap-3 px-4 py-3 rounded-2xl'
+            }`}
             style={{
-              background: 'linear-gradient(135deg, var(--color-teal) 0%, #0d9488 100%)',
+              background: isCollapsed
+                ? 'linear-gradient(135deg, rgba(20, 184, 166, 0.9) 0%, rgba(13, 148, 136, 1) 100%)'
+                : 'linear-gradient(135deg, rgba(20, 184, 166, 0.16) 0%, rgba(13, 148, 136, 0.28) 100%)',
               color: 'white',
               cursor: 'pointer',
-              boxShadow: '0 4px 12px rgba(13, 148, 136, 0.3)'
+              boxShadow: isCollapsed
+                ? '0 10px 24px rgba(13, 148, 136, 0.2)'
+                : '0 12px 28px rgba(13, 148, 136, 0.16)',
+              border: isCollapsed
+                ? '1px solid rgba(240, 253, 250, 0.28)'
+                : '1px solid rgba(94, 234, 212, 0.18)'
             }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = isCollapsed ? 'translateY(-1px) scale(1.03)' : 'translateY(-1px)'
+              e.currentTarget.style.boxShadow = isCollapsed
+                ? '0 14px 28px rgba(13, 148, 136, 0.26)'
+                : '0 16px 36px rgba(13, 148, 136, 0.22)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = 'translateY(0) scale(1)'
+              e.currentTarget.style.boxShadow = isCollapsed
+                ? '0 10px 24px rgba(13, 148, 136, 0.2)'
+                : '0 12px 28px rgba(13, 148, 136, 0.16)'
+            }}
+            title="Sign up"
           >
-            <span>Sign up</span>
+            <span
+              className={`flex items-center justify-center rounded-xl shrink-0 ${
+                isCollapsed ? 'w-12 h-12 rounded-full' : 'w-10 h-10'
+              }`}
+              style={{
+                background: isCollapsed
+                  ? 'transparent'
+                  : 'rgba(255, 255, 255, 0.12)'
+              }}
+            >
+              <UserPlus className="w-5 h-5" />
+            </span>
+            {!isCollapsed && (
+              <>
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block text-[11px] uppercase tracking-[0.18em] text-white/60">Account</span>
+                  <span className="block text-sm font-semibold text-white">Sign up to save your work</span>
+                </span>
+                <ArrowRight className="w-4 h-4 text-white/80 transition-transform duration-200 group-hover:translate-x-0.5" />
+              </>
+            )}
           </Link>
         )}
       </div>
