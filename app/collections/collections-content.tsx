@@ -217,15 +217,17 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   const getCollectionPermissions = (collection: Collection) => {
     const role = collectionRoles[collection.id] || null
     const isOwner = collection.user_id === currentUserId || role === 'owner'
-    const hasSharedAccess = role === 'editor' || role === 'viewer'
-    const canManageCollection = isOwner || (hasSharedAccess && role === 'editor' && collection.is_public)
+    const hasSharedAccess = role === 'editor' || role === 'viewer' || role === 'owner'
+    const canManageCollection = isOwner || (hasSharedAccess && collection.is_public)
     const canViewCollection = isOwner || hasSharedAccess
+    const canDeleteCollection = isOwner
     const canToggleVisibility = isOwner
 
     return {
       isOwner,
       canViewCollection,
       canManageCollection,
+      canDeleteCollection,
       canToggleVisibility,
     }
   }
@@ -547,7 +549,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
             table: 'collections'
           },
           () => {
-            scheduleRefreshCollections()
+            scheduleRefreshCollections(0)
           }
         )
         .on(
@@ -559,7 +561,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
             filter: `user_id=eq.${user.id}`
           },
           () => {
-            scheduleRefreshCollections()
+            scheduleRefreshCollections(0)
           }
         )
         .on(
@@ -734,9 +736,9 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
   }
 
   const openDeleteModal = (collection: Collection) => {
-    const { canManageCollection } = getCollectionPermissions(collection)
-    if (!canManageCollection) {
-      showToastMessage(getPrivateEditMessage(), 'error')
+    const { canDeleteCollection } = getCollectionPermissions(collection)
+    if (!canDeleteCollection) {
+      showToastMessage('Only the owner can delete this collection.', 'error')
       return
     }
     setCollectionToDelete(collection)
@@ -1379,7 +1381,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
       }
 
       setToast({
-        message: `Collection added! You can ${data.role === 'viewer' ? 'view' : 'edit'} this ${data.is_public ? 'public' : 'private'} collection.`,
+        message: `Collection added! You can ${data.is_public ? 'edit' : 'view'} this ${data.is_public ? 'public' : 'private'} collection.`,
         type: 'success'
       })
       setTimeout(() => setToast(null), 3000)
@@ -1667,7 +1669,9 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
             const bookmarks = collectionBookmarks[collection.id] || []
             const bookmarkCount = collectionBookmarkCounts[collection.id] || 0
             const userRole = collectionRoles[collection.id] || 'owner' // Default to owner for own collections
-            const { isOwner, canManageCollection, canToggleVisibility } = getCollectionPermissions(collection)
+            const { isOwner, canManageCollection, canDeleteCollection, canToggleVisibility } = getCollectionPermissions(collection)
+            const canCollaborate = !isOwner && collection.is_public
+            const isViewOnly = !isOwner && !collection.is_public
 
             return (
               <Card
@@ -1679,7 +1683,7 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                 {/* Role indicator bar - different colors for different roles */}
                 <div className={`h-2 ${
                   userRole === 'owner' ? 'bg-blue-500' :
-                  userRole === 'editor' ? 'bg-green-500' :
+                  collection.is_public ? 'bg-green-500' :
                   'bg-gray-400'
                 }`} />
                 <CardContent className="p-6 flex flex-col flex-grow">
@@ -1693,10 +1697,10 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                           {/* Role badge */}
                           {!isOwner && (
                             <span className="text-xs px-2 py-0.5 rounded-full" style={{
-                              backgroundColor: collection.is_public ? 'rgba(34, 197, 94, 0.2)' : 'rgba(156, 163, 175, 0.2)',
-                              color: collection.is_public ? '#15803d' : '#6b7280'
+                              backgroundColor: canCollaborate ? 'rgba(34, 197, 94, 0.2)' : 'rgba(156, 163, 175, 0.2)',
+                              color: canCollaborate ? '#15803d' : '#6b7280'
                             }}>
-                              {collection.is_public ? '✏️ Public collaborator' : '👁️ View only'}
+                              {canCollaborate ? 'Public collaborator' : 'View only'}
                             </span>
                           )}
                         </div>
@@ -1780,22 +1784,24 @@ export function CollectionsContent({ searchQuery, setSearchQuery }: CollectionsC
                               </span>
                             </button>
                           )}
-                          <button
-                            onClick={(e) => { e.stopPropagation(); openDeleteModal(collection); }}
-                            className="group/btn relative p-1 transition-all duration-75 active:scale-90"
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <svg className="w-5 h-5 text-gray-400 group-hover/btn:text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                            </svg>
-                            <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 px-2 py-1 text-xs text-white rounded whitespace-nowrap opacity-0 transition-opacity duration-0 group-hover/btn:opacity-100 group-hover/btn:delay-300 pointer-events-none z-50" style={{ backgroundColor: '#1f2937' }}>
-                              Delete
-                            </span>
-                          </button>
+                          {canDeleteCollection && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openDeleteModal(collection); }}
+                              className="group/btn relative p-1 transition-all duration-75 active:scale-90"
+                              style={{ cursor: 'pointer' }}
+                            >
+                              <svg className="w-5 h-5 text-gray-400 group-hover/btn:text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                              <span className="absolute left-1/2 top-full mt-2 -translate-x-1/2 px-2 py-1 text-xs text-white rounded whitespace-nowrap opacity-0 transition-opacity duration-0 group-hover/btn:opacity-100 group-hover/btn:delay-300 pointer-events-none z-50" style={{ backgroundColor: '#1f2937' }}>
+                                Delete
+                              </span>
+                            </button>
+                          )}
                         </div>
                       )}
                       {/* Remove button - show for non-owners (shared collections) */}
-                      {!isOwner && !canManageCollection && (
+                      {!isOwner && isViewOnly && (
                         <div className="flex gap-1">
                           <button
                             onClick={(e) => { e.stopPropagation(); removeCollectionFromView(collection); }}

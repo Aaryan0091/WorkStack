@@ -182,6 +182,34 @@ img {
   border-bottom-color: rgba(var(--border-color-rgb), 0.6);
 }
 
+@keyframes profileMenuRevealFromProfile {
+  from {
+    opacity: 0;
+    transform: translate3d(-14px, 10px, 0) scale(0.82);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes profileMenuCollapseToProfile {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: translate3d(-14px, 10px, 0) scale(0.82);
+  }
+}
+
+.profile-menu-popover {
+  will-change: transform, opacity;
+}
+
 /* Mobile header glass effect */
 .mobile-header {
   background: rgba(var(--bg-primary-rgb), 0.85);

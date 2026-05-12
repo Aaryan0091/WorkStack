@@ -57,6 +57,45 @@ export const POST = withApiHandler(async (request: NextRequest) => {
   // Use service role key to bypass RLS, fallback to anon key if service key not available
   const supabase = createClient(supabaseUrl, supabaseServiceKey || supabaseAnonKey)
 
+  let targetCollection:
+    | { id: string; user_id: string; is_public: boolean }
+    | null = null
+  let canSyncLegacyCollectionId = false
+
+  if (collection_id) {
+    const [{ data: collection }, { data: sharedAccess }] = await Promise.all([
+      supabase
+        .from('collections')
+        .select('id, user_id, is_public')
+        .eq('id', collection_id)
+        .single(),
+      supabase
+        .from('shared_collections')
+        .select('role')
+        .eq('collection_id', collection_id)
+        .eq('user_id', user.id)
+        .maybeSingle()
+    ])
+
+    if (!collection) {
+      throw new ApiError('Collection not found', 404, 'NOT_FOUND')
+    }
+
+    const isOwner = collection.user_id === user.id || sharedAccess?.role === 'owner'
+    const hasSharedAccess = sharedAccess?.role === 'editor' || sharedAccess?.role === 'viewer' || sharedAccess?.role === 'owner'
+    const canEditCollection = isOwner || (hasSharedAccess && collection.is_public)
+    targetCollection = collection
+    canSyncLegacyCollectionId = isOwner
+
+    if (!canEditCollection) {
+      throw new ApiError(
+        'You are not allowed to make edits in this private collection. Ask the owner to make the collection public first.',
+        403,
+        'FORBIDDEN'
+      )
+    }
+  }
+
   // Check if bookmark already exists for this user
   const { data: existing } = await supabase
     .from('bookmarks')
@@ -77,15 +116,21 @@ export const POST = withApiHandler(async (request: NextRequest) => {
         .single()
 
       if (!existingInCollection) {
-        await supabase
+        const { error: relationError } = await supabase
           .from('collection_bookmarks')
           .insert({ collection_id, bookmark_id: existing.id, added_by: user.id })
+
+        if (relationError) {
+          throw new ApiError('Failed to add bookmark to collection', 403, 'FORBIDDEN')
+        }
       }
 
-      await supabase
-        .from('bookmarks')
-        .update({ collection_id })
-        .eq('id', existing.id)
+      if (canSyncLegacyCollectionId) {
+        await supabase
+          .from('bookmarks')
+          .update({ collection_id })
+          .eq('id', existing.id)
+      }
 
       const { data: updated } = await supabase
         .from('bookmarks')
@@ -109,7 +154,7 @@ export const POST = withApiHandler(async (request: NextRequest) => {
       description: sanitizedDescription || null,
       notes: sanitizedNotes || null,
       folder_id: folder_id || null,
-      collection_id: collection_id || null,
+      collection_id: canSyncLegacyCollectionId ? collection_id || null : null,
       is_read: true,
       is_favorite: false,
     })
@@ -128,10 +173,21 @@ export const POST = withApiHandler(async (request: NextRequest) => {
       .insert({ collection_id, bookmark_id: data.id, added_by: user.id })
 
     if (collectionError) {
-      // Log the error but don't fail the entire request
-      // The bookmark is created, just not added to collection
       console.error('Failed to add bookmark to collection:', collectionError)
-      // Continue with the response - bookmark was created successfully
+      await supabase
+        .from('bookmarks')
+        .delete()
+        .eq('id', data.id)
+
+      throw new ApiError('Failed to add bookmark to collection', 403, 'FORBIDDEN')
+    }
+
+    if (!canSyncLegacyCollectionId && targetCollection) {
+      // Keep collaborator-created bookmarks out of the legacy single-collection field.
+      await supabase
+        .from('bookmarks')
+        .update({ collection_id: null })
+        .eq('id', data.id)
     }
   }
 

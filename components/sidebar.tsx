@@ -2,9 +2,10 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Modal } from '@/components/ui/modal'
+import { useTheme } from 'next-themes'
 import {
   LayoutDashboard,
   Bookmark,
@@ -17,6 +18,7 @@ import {
   Menu,
   UserPlus,
   ArrowRight,
+  ChevronUp,
 } from 'lucide-react'
 
 interface NavItem {
@@ -36,21 +38,77 @@ const navItems: NavItem[] = [
   { href: '/tags', label: 'Tags', icon: Tag, color: 'var(--color-orange)' },
 ]
 
-// Simple cache for user email to avoid repeated fetches
-let cachedEmail: string | null = null
-let emailFetchInProgress = false
+interface CachedUserIdentity {
+  email: string | null
+  name: string | null
+}
 
-async function getCachedEmail(): Promise<string | null> {
-  if (cachedEmail) return cachedEmail
-  if (emailFetchInProgress) return null
+function normalizeDisplayName(name: string | null | undefined): string | null {
+  const cleanedName = name?.trim() || ''
+  if (cleanedName.length < 2) return null
 
-  emailFetchInProgress = true
+  const hasLetters = /[A-Za-z]/.test(cleanedName)
+  if (!hasLetters) return null
+
+  return cleanedName
+}
+
+// Simple cache for user identity to avoid repeated fetches
+let cachedUserIdentity: CachedUserIdentity | null = null
+let userIdentityFetchInProgress = false
+
+function getInitials(name: string | null, email: string | null): string {
+  const emailLocalPart = email?.split('@')[0]?.trim()
+  if (emailLocalPart) {
+    return emailLocalPart.replace(/[^A-Za-z0-9]/g, '').slice(0, 1).toUpperCase()
+  }
+
+  const cleanedName = normalizeDisplayName(name)
+  if (cleanedName) {
+    const parts = cleanedName.split(/\s+/).filter(Boolean)
+    if (parts.length >= 2) {
+      const initials = parts.slice(0, 1).map((part) => part[0]?.toUpperCase() ?? '').join('')
+      if (initials) return initials
+    }
+
+    const condensedName = parts[0].replace(/[^A-Za-z0-9]/g, '')
+    if (condensedName) {
+      return condensedName.slice(0, 1).toUpperCase()
+    }
+  }
+
+  return 'U'
+}
+
+async function getCachedUserIdentity(): Promise<CachedUserIdentity | null> {
+  if (cachedUserIdentity) return cachedUserIdentity
+  if (userIdentityFetchInProgress) return null
+
+  userIdentityFetchInProgress = true
   try {
     const { data: { user } } = await supabase.auth.getUser()
-    cachedEmail = user?.email || null
-    return cachedEmail
+    cachedUserIdentity = {
+      email: user?.email || null,
+      name: normalizeDisplayName(user?.user_metadata?.name) || normalizeDisplayName(user?.user_metadata?.full_name),
+    }
+    return cachedUserIdentity
   } finally {
-    emailFetchInProgress = false
+    userIdentityFetchInProgress = false
+  }
+}
+
+function clearCachedUserIdentity() {
+  cachedUserIdentity = null
+  userIdentityFetchInProgress = false
+}
+
+function getUserIdentityFromSessionUser(user: {
+  email?: string | null
+  user_metadata?: { name?: string | null; full_name?: string | null } | null
+} | null): CachedUserIdentity {
+  return {
+    email: user?.email || null,
+    name: normalizeDisplayName(user?.user_metadata?.name) || normalizeDisplayName(user?.user_metadata?.full_name),
   }
 }
 
@@ -95,13 +153,28 @@ export function closeMobileSidebar() {
 }
 
 export function Sidebar() {
+  const PROFILE_MENU_ANIMATION_MS = 220
   const pathname = usePathname()
   const router = useRouter()
+  const { resolvedTheme, setTheme } = useTheme()
   const [email, setEmail] = useState('')
+  const [displayName, setDisplayName] = useState('')
   const [showLogoutModal, setShowLogoutModal] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
   const [isMobileOpen, setIsMobileOpen] = useState(false)
   const [isCollapsed, setIsCollapsed] = useState(false)
+  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false)
+  const [isProfileMenuClosing, setIsProfileMenuClosing] = useState(false)
+  const profileMenuRef = useRef<HTMLDivElement | null>(null)
+  const profileTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const profilePanelRef = useRef<HTMLDivElement | null>(null)
+  const profileMenuCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [profileMenuStyle, setProfileMenuStyle] = useState<CSSProperties | null>(null)
+
+  const applyUserIdentity = (identity: CachedUserIdentity | null) => {
+    setEmail(identity?.email || '')
+    setDisplayName(identity?.name || '')
+  }
 
   useEffect(() => {
     // Load collapsed state from localStorage
@@ -111,10 +184,18 @@ export function Sidebar() {
       setIsCollapsed(true)
     }
 
-    // Use cached email to avoid repeated fetches
-    getCachedEmail().then(e => {
-      if (e) setEmail(e)
+    // Use cached user identity to avoid repeated fetches
+    getCachedUserIdentity().then(identity => {
+      applyUserIdentity(identity)
     }).catch(() => {})
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const identity = getUserIdentityFromSessionUser(session?.user ?? null)
+      cachedUserIdentity = identity
+      applyUserIdentity(identity)
+    })
 
     // Prefetch all routes on mount for instant navigation
     navItems.forEach((item) => {
@@ -130,18 +211,127 @@ export function Sidebar() {
     desktopSidebarListeners.add(handleDesktopCollapse)
 
     return () => {
+      if (profileMenuCloseTimeoutRef.current) {
+        clearTimeout(profileMenuCloseTimeoutRef.current)
+      }
+      subscription.unsubscribe()
       mobileSidebarListeners.delete(handleMobileToggle)
       desktopSidebarListeners.delete(handleDesktopCollapse)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const openProfileMenu = () => {
+    if (profileMenuCloseTimeoutRef.current) {
+      clearTimeout(profileMenuCloseTimeoutRef.current)
+      profileMenuCloseTimeoutRef.current = null
+    }
+    setIsProfileMenuClosing(false)
+    setIsProfileMenuOpen(true)
+  }
+
+  const closeProfileMenu = useCallback(() => {
+    if (!isProfileMenuOpen) return
+
+    setIsProfileMenuClosing(true)
+    if (profileMenuCloseTimeoutRef.current) {
+      clearTimeout(profileMenuCloseTimeoutRef.current)
+    }
+    profileMenuCloseTimeoutRef.current = setTimeout(() => {
+      setIsProfileMenuOpen(false)
+      setIsProfileMenuClosing(false)
+      profileMenuCloseTimeoutRef.current = null
+    }, PROFILE_MENU_ANIMATION_MS)
+  }, [isProfileMenuOpen])
+
+  const updateProfileMenuPosition = useCallback(() => {
+    if (!profileTriggerRef.current || !profilePanelRef.current) return
+
+    const triggerRect = profileTriggerRef.current.getBoundingClientRect()
+    const viewportPadding = 16
+    const menuWidth = isCollapsed ? 216 : Math.min(Math.max(triggerRect.width, 240), 280)
+    const maxHeight = Math.max(220, window.innerHeight - viewportPadding * 2)
+
+    let left = isCollapsed ? triggerRect.right + 8 : triggerRect.left
+    if (left + menuWidth > window.innerWidth - viewportPadding) {
+      left = Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
+    }
+
+    let bottom = window.innerHeight - triggerRect.bottom
+    const menuHeight = profilePanelRef.current.offsetHeight
+    const topFromBottom = window.innerHeight - bottom - menuHeight
+    if (topFromBottom < viewportPadding) {
+      bottom = Math.max(viewportPadding, window.innerHeight - viewportPadding - menuHeight)
+    }
+
+    setProfileMenuStyle({
+      position: 'fixed',
+      bottom,
+      left,
+      width: menuWidth,
+      maxHeight,
+      overflowY: 'auto',
+    })
+  }, [isCollapsed])
+
+  useLayoutEffect(() => {
+    if (!isProfileMenuOpen) {
+      setProfileMenuStyle(null)
+      return
+    }
+
+    updateProfileMenuPosition()
+  }, [isProfileMenuOpen, updateProfileMenuPosition])
+
+  useEffect(() => {
+    if (!isProfileMenuOpen) return
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!profileMenuRef.current?.contains(event.target as Node)) {
+        closeProfileMenu()
+      }
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeProfileMenu()
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleEscape)
+    window.addEventListener('resize', updateProfileMenuPosition)
+    window.addEventListener('scroll', updateProfileMenuPosition, true)
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleEscape)
+      window.removeEventListener('resize', updateProfileMenuPosition)
+      window.removeEventListener('scroll', updateProfileMenuPosition, true)
+    }
+  }, [isProfileMenuOpen, closeProfileMenu, updateProfileMenuPosition])
+
   const handleLogout = async () => {
+    closeProfileMenu()
     setShowLogoutModal(true)
   }
 
+  const handleSwitchProfile = async () => {
+    closeProfileMenu()
+    clearCachedUserIdentity()
+    applyUserIdentity(null)
+    await supabase.auth.signOut()
+    localStorage.removeItem('workstack_sync_prompt_shown')
+    window.location.href = '/login'
+  }
+
+  const profileInitials = getInitials(displayName || null, email || null)
+  const profileLabel = displayName || email.split('@')[0] || 'Account'
+
   const confirmLogout = async () => {
     setLoggingOut(true)
+    clearCachedUserIdentity()
+    applyUserIdentity(null)
     await supabase.auth.signOut()
     // Clear guest data flag to allow sync prompt again if they sign back in
     localStorage.removeItem('workstack_sync_prompt_shown')
@@ -281,29 +471,123 @@ export function Sidebar() {
           }}>{email}</p>
         )}
         {email ? (
-          <button
-            onClick={handleLogout}
-            className={`flex items-center gap-3 px-4 py-2.5 rounded-xl w-full transition-all duration-200 ${isCollapsed ? 'justify-center' : ''}`}
-            style={{
-              color: 'var(--text-secondary)',
-              cursor: 'pointer',
-              background: 'transparent'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'rgba(var(--bg-secondary-rgb), 0.6)'
-              e.currentTarget.style.color = 'var(--text-primary)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'transparent'
-              e.currentTarget.style.color = 'var(--text-secondary)'
-            }}
-            title="Logout"
-          >
-            <LogOut className="w-5 h-5 shrink-0" />
-            {!isCollapsed && (
-              <span className="text-sm font-medium">Logout</span>
+          <div className="relative" ref={profileMenuRef}>
+            <button
+              type="button"
+              ref={profileTriggerRef}
+              onClick={() => {
+                if (isProfileMenuOpen && !isProfileMenuClosing) {
+                  closeProfileMenu()
+                  return
+                }
+                openProfileMenu()
+              }}
+              className={`group flex items-center transition-all duration-200 ${
+                isCollapsed ? 'justify-center w-12 h-12 mx-auto rounded-full' : 'w-full gap-3 px-3 py-2.5 rounded-2xl'
+              }`}
+              style={{
+                color: 'var(--text-primary)',
+                cursor: 'pointer',
+                background: isCollapsed ? 'transparent' : 'rgba(var(--bg-secondary-rgb), 0.42)'
+              }}
+              onMouseEnter={(e) => {
+                if (!isCollapsed) {
+                  e.currentTarget.style.background = 'rgba(var(--bg-secondary-rgb), 0.62)'
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isCollapsed) {
+                  e.currentTarget.style.background = 'rgba(var(--bg-secondary-rgb), 0.42)'
+                }
+              }}
+              aria-label="Open profile menu"
+              aria-expanded={isProfileMenuOpen && !isProfileMenuClosing}
+            >
+              <span
+                className={`flex items-center justify-center shrink-0 ${
+                  isCollapsed ? 'w-12 h-12 rounded-full' : 'w-10 h-10 rounded-2xl'
+                }`}
+                style={{
+                  background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.92) 0%, rgba(14, 165, 233, 0.92) 100%)',
+                  boxShadow: '0 10px 22px rgba(14, 165, 233, 0.18)'
+                }}
+              >
+                <span className="text-sm font-semibold tracking-[0.08em] text-white">{profileInitials}</span>
+              </span>
+              {!isCollapsed && (
+                <>
+                  <span className="min-w-0 flex-1 text-left">
+                    <span className="block text-sm font-semibold truncate">{profileLabel}</span>
+                    <span className="block text-xs truncate" style={{ color: 'var(--text-secondary)' }}>{email}</span>
+                  </span>
+                  <ChevronUp
+                    className={`w-4 h-4 shrink-0 transition-transform duration-200 ${isProfileMenuOpen && !isProfileMenuClosing ? 'rotate-0' : 'rotate-180'}`}
+                    style={{ color: 'var(--text-secondary)' }}
+                  />
+                </>
+              )}
+            </button>
+
+            {isProfileMenuOpen && (
+              <div
+                ref={profilePanelRef}
+                className="overflow-hidden rounded-2xl border backdrop-blur-xl profile-menu-popover"
+                style={{
+                  background: 'rgba(var(--bg-primary-rgb), 0.92)',
+                  borderColor: 'rgba(var(--bg-secondary-rgb), 0.85)',
+                  boxShadow: '0 18px 50px rgba(15, 23, 42, 0.24)',
+                  transformOrigin: isCollapsed ? 'left bottom' : 'left bottom',
+                  animation: `${isProfileMenuClosing ? 'profileMenuCollapseToProfile' : 'profileMenuRevealFromProfile'} ${PROFILE_MENU_ANIMATION_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+                  position: 'fixed',
+                  left: 0,
+                  bottom: 0,
+                  visibility: profileMenuStyle ? 'visible' : 'hidden',
+                  ...profileMenuStyle,
+                }}
+              >
+                <div className="p-2">
+                  <button
+                    type="button"
+                    onClick={handleSwitchProfile}
+                    className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition-colors"
+                    style={{ color: 'var(--text-primary)', cursor: 'pointer' }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(var(--bg-secondary-rgb), 0.56)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent'
+                    }}
+                  >Switch profile</button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
+                    className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition-colors"
+                    style={{ color: 'var(--text-primary)', cursor: 'pointer' }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(var(--bg-secondary-rgb), 0.56)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent'
+                    }}
+                  >{resolvedTheme === 'dark' ? 'Light mode' : 'Dark mode'}</button>
+
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition-colors"
+                    style={{ color: 'var(--text-primary)', cursor: 'pointer' }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'rgba(248, 113, 113, 0.12)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent'
+                    }}
+                  >Logout</button>
+                </div>
+              </div>
             )}
-          </button>
+          </div>
         ) : (
           <Link
             href="/login"

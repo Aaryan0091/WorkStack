@@ -81,9 +81,10 @@ export async function PATCH(
       return corsHeaders(response, request)
     }
 
-    const isOwner = collection.user_id === user.id
     const sharedRole = sharedAccess?.role || null
-    const canEditCollection = isOwner || (sharedRole === 'editor' && collection.is_public) || sharedRole === 'owner'
+    const isOwner = collection.user_id === user.id || sharedRole === 'owner'
+    const hasSharedAccess = sharedRole === 'editor' || sharedRole === 'viewer' || sharedRole === 'owner'
+    const canEditCollection = isOwner || (hasSharedAccess && collection.is_public)
 
     if (!canEditCollection) {
       const response = NextResponse.json({ error: getPrivateEditMessage() }, { status: 403 })
@@ -163,12 +164,12 @@ export async function DELETE(
       return corsHeaders(response, request)
     }
 
-    const isOwner = collection.user_id === user.id
     const sharedRole = sharedAccess?.role || null
-    const canDeleteCollection = isOwner || (sharedRole === 'editor' && collection.is_public) || sharedRole === 'owner'
+    const isOwner = collection.user_id === user.id || sharedRole === 'owner'
+    const canDeleteCollection = isOwner
 
     if (!canDeleteCollection) {
-      const response = NextResponse.json({ error: getPrivateEditMessage() }, { status: 403 })
+      const response = NextResponse.json({ error: 'Only the owner can delete this collection.' }, { status: 403 })
       return corsHeaders(response, request)
     }
 

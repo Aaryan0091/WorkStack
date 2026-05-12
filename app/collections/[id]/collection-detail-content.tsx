@@ -67,8 +67,6 @@ export function CollectionDetailContent({ collectionId }: Props) {
   const channelRef = useRef<RealtimeChannel | null>(null)
   // Track if we've set up the subscription yet
   const subscriptionReady = useRef(false)
-  // Track initial data fetch completion
-  const initialFetchComplete = useRef(false)
   // Track current bookmark count via ref to avoid stale closure in safeguard
   const bookmarksCountRef = useRef(0)
   const bookmarkIdsRef = useRef<Set<string>>(new Set())
@@ -82,6 +80,8 @@ export function CollectionDetailContent({ collectionId }: Props) {
         isOwner: false,
         canViewCollection: false,
         canManageCollection: false,
+        canMutateBookmarkDetails: false,
+        canDeleteCollection: false,
         canToggleVisibility: false,
       }
     }
@@ -91,7 +91,9 @@ export function CollectionDetailContent({ collectionId }: Props) {
     return {
       isOwner,
       canViewCollection: isOwner || hasSharedAccess,
-      canManageCollection: isOwner || (sharedRole === 'editor' && targetCollection.is_public),
+      canManageCollection: isOwner || (hasSharedAccess && targetCollection.is_public),
+      canMutateBookmarkDetails: isOwner,
+      canDeleteCollection: isOwner,
       canToggleVisibility: isOwner,
     }
   }
@@ -107,7 +109,6 @@ export function CollectionDetailContent({ collectionId }: Props) {
         channelRef.current = null
       }
       subscriptionReady.current = false
-      initialFetchComplete.current = false
       bookmarkIdsRef.current = new Set()
       if (refreshDataTimeoutRef.current) {
         clearTimeout(refreshDataTimeoutRef.current)
@@ -184,7 +185,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
     try {
       // Add all selected bookmarks to collection via junction table
-      const insertResults = await Promise.allSettled(
+      const insertResults = await Promise.all(
         Array.from(bookmarkIds).map(bookmarkId =>
           supabase
             .from('collection_bookmarks')
@@ -198,10 +199,13 @@ export function CollectionDetailContent({ collectionId }: Props) {
         )
       )
 
-      // Check for any failed inserts
-      const failures = insertResults.filter(r => r.status === 'rejected')
+      const failures = insertResults.filter((result) => result.error)
       if (failures.length > 0) {
         console.error('Some bookmarks failed to add:', failures)
+        setPermissionMessage(getPrivateEditMessage())
+        await fetchData()
+        await fetchAvailableBookmarks()
+        return
       }
 
       // Refresh data
@@ -241,69 +245,45 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
     setActionLoading(true)
 
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) {
-      router.push('/login')
-      return
-    }
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) {
+        router.push('/login')
+        return
+      }
 
-    // Check if a bookmark with this URL already exists in this collection
-    const { data: existingBookmark } = await supabase
-      .from('collection_bookmarks')
-      .select('bookmark_id, bookmarks!inner(url)')
-      .eq('collection_id', collectionId)
-      .limit(1)
-
-    const existingUrlInCollection = existingBookmark?.find((cb: { bookmark_id: string; bookmarks: { url: string }[] }) => cb.bookmarks?.[0]?.url === newBookmarkUrl)
-    if (existingUrlInCollection) {
-      setActionLoading(false)
-      setFormError('This URL is already in this collection')
-      return
-    }
-
-    // Create new bookmark with is_read: true so it doesn't appear in reading list
-    const { data } = await supabase
-      .from('bookmarks')
-      .insert({
-        user_id: user.id,
-        url: newBookmarkUrl,
-        title: newBookmarkTitle || new URL(newBookmarkUrl).hostname,
-        is_read: true,
-        is_favorite: false,
-      })
-      .select()
-      .single()
-
-    if (!data) {
-      setActionLoading(false)
-      setFormError('Failed to create bookmark')
-      return
-    }
-
-    // Add to collection via junction table
-    const { error } = await supabase
-      .from('collection_bookmarks')
-      .insert({
-        collection_id: collectionId,
-        bookmark_id: data.id,
-        added_by: user.id
+      const response = await fetch('/api/bookmarks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          url: newBookmarkUrl,
+          title: newBookmarkTitle || new URL(newBookmarkUrl).hostname,
+          collection_id: collectionId,
+        }),
       })
 
-    if (error) {
+      const payload = await response.json().catch(() => null)
+      if (!response.ok) {
+        setFormError(payload?.error || 'Failed to add to collection')
+        await fetchData()
+        await fetchAvailableBookmarks()
+        return
+      }
+
+      await fetchData()
+      await fetchAvailableBookmarks()
+
+      setNewBookmarkUrl('')
+      setNewBookmarkTitle('')
+      setShowNewBookmarkForm(false)
+      setAddModalOpen(false)
+    } finally {
       setActionLoading(false)
-      setFormError('Failed to add to collection')
-      return
     }
-
-    // Refresh data
-    await fetchData()
-    await fetchAvailableBookmarks()
-
-    setNewBookmarkUrl('')
-    setNewBookmarkTitle('')
-    setShowNewBookmarkForm(false)
-    setAddModalOpen(false)
-    setActionLoading(false)
   }
 
   const getDomain = (url: string) => {
@@ -406,11 +386,12 @@ export function CollectionDetailContent({ collectionId }: Props) {
         .from('collection_bookmarks')
         .select('bookmark_id, bookmarks(*), added_by')
         .eq('collection_id', collectionId),
-      // Also fetch bookmarks with direct collection_id for backwards compatibility
-      supabase
-        .from('bookmarks')
-        .select('*')
-        .eq('collection_id', collectionId)
+      isOwner
+        ? supabase
+            .from('bookmarks')
+            .select('*')
+            .eq('collection_id', collectionId)
+        : Promise.resolve({ data: [] as CollectionBookmark[] | null })
     ])
 
     // Extract bookmarks from junction table result with added_by info
@@ -499,27 +480,24 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
     bookmarkIdsRef.current = new Set(newBookmarks.map((bookmark) => bookmark.id))
 
-    if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] About to set bookmarks:', newBookmarks.length)
-    if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] Current bookmarks in state:', bookmarks.length)
-    if (process.env.NODE_ENV === 'development') console.log('[setBookmarks] initialFetchComplete:', initialFetchComplete.current)
-
-    // Mark that a fetch has completed (before the safeguard check)
-    const isFirstFetch = !initialFetchComplete.current
-    initialFetchComplete.current = true
-
-    // SAFEGUARD: Don't overwrite existing bookmarks with empty data after initial fetch
-    // This prevents the subscription callback from clearing data on initial subscribe
-    if (!isFirstFetch && newBookmarks.length === 0 && bookmarksCountRef.current > 0) {
-      console.warn('[setBookmarks] BLOCKED - Would overwrite', bookmarksCountRef.current, 'bookmarks with 0')
-      setLoading(false)
-      return
-    }
-
     bookmarksCountRef.current = newBookmarks.length
     setBookmarks(newBookmarks)
     setLoading(false)
 
-    if (process.env.NODE_ENV === 'development') console.log('[fetchData] Fetch complete, bookmarks:', newBookmarks.length, 'isFirstFetch:', isFirstFetch)
+    const nextPermissions = {
+      isOwner,
+      canManageCollection: isOwner || (hasSharedAccess && newCollection.is_public),
+    }
+
+    if (!nextPermissions.canManageCollection) {
+      setAddModalOpen(false)
+      setEditModalOpen(false)
+      setSelectionMode(false)
+      setSelectedBookmarkIds(new Set())
+      setShowNewBookmarkForm(false)
+    }
+
+    if (process.env.NODE_ENV === 'development') console.log('[fetchData] Fetch complete, bookmarks:', newBookmarks.length)
 
     // Set up real-time subscription AFTER initial data is loaded (only once)
     if (!subscriptionReady.current && user) {
@@ -538,7 +516,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
             filter: `collection_id=eq.${collectionId}`
           },
           () => {
-            scheduleFetchData()
+            scheduleFetchData(0)
           }
         )
         .on(
@@ -551,7 +529,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
             filter: `id=eq.${collectionId}`
           },
           () => {
-            scheduleFetchData()
+            scheduleFetchData(0)
           }
         )
         .on(
@@ -564,7 +542,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
             filter: `collection_id=eq.${collectionId}`
           },
           () => {
-            scheduleFetchData()
+            scheduleFetchData(0)
           }
         )
         .on(
@@ -577,7 +555,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
             filter: `collection_id=eq.${collectionId}`
           },
           () => {
-            scheduleFetchData()
+            scheduleFetchData(0)
           }
         )
         .on(
@@ -757,20 +735,36 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
     const { canManageCollection } = getCollectionPermissions(collection)
 
+    const { isOwner } = getCollectionPermissions(collection)
+
     if (canManageCollection) {
       // Editors remove bookmarks from the shared collection for everyone.
-      await supabase
+      const { error: relationDeleteError } = await supabase
         .from('collection_bookmarks')
         .delete()
         .eq('collection_id', collectionId)
         .eq('bookmark_id', bookmarkId)
 
-      // Also clear direct collection_id for backwards compatibility
-      await supabase
-        .from('bookmarks')
-        .update({ collection_id: null })
-        .eq('id', bookmarkId)
-        .eq('collection_id', collectionId)
+      if (relationDeleteError) {
+        console.error('Failed to remove bookmark from collection:', relationDeleteError)
+        setPermissionMessage(getPrivateEditMessage())
+        setActionLoading(false)
+        await fetchData()
+        return
+      }
+
+      if (isOwner) {
+        // Keep the legacy direct collection link in sync for the owner only.
+        const { error: legacyUpdateError } = await supabase
+          .from('bookmarks')
+          .update({ collection_id: null })
+          .eq('id', bookmarkId)
+          .eq('collection_id', collectionId)
+
+        if (legacyUpdateError) {
+          console.error('Failed to sync legacy bookmark collection link:', legacyUpdateError)
+        }
+      }
 
       // Optimistically update UI, then refresh
       bookmarksCountRef.current = Math.max(0, bookmarksCountRef.current - 1)
@@ -817,9 +811,9 @@ export function CollectionDetailContent({ collectionId }: Props) {
   }
 
   const openDeleteModal = () => {
-    const { canManageCollection } = getCollectionPermissions(collection)
-    if (!canManageCollection) {
-      setPermissionMessage(getPrivateEditMessage())
+    const { canDeleteCollection } = getCollectionPermissions(collection)
+    if (!canDeleteCollection) {
+      setPermissionMessage('Only the owner can delete this collection.')
       return
     }
     setDeleteModalOpen(true)
@@ -1046,21 +1040,37 @@ export function CollectionDetailContent({ collectionId }: Props) {
 
     const { canManageCollection } = getCollectionPermissions(collection)
 
+    const { isOwner } = getCollectionPermissions(collection)
+
     if (canManageCollection) {
       // Editors remove bookmarks from the shared collection for everyone.
       for (const bookmarkId of selectedBookmarkIds) {
-        await supabase
+        const { error: relationDeleteError } = await supabase
           .from('collection_bookmarks')
           .delete()
           .eq('collection_id', collectionId)
           .eq('bookmark_id', bookmarkId)
 
-        // Also clear direct collection_id for backwards compatibility
-        await supabase
-          .from('bookmarks')
-          .update({ collection_id: null })
-          .eq('id', bookmarkId)
-          .eq('collection_id', collectionId)
+        if (relationDeleteError) {
+          console.error('Failed to bulk remove bookmark from collection:', relationDeleteError)
+          setPermissionMessage(getPrivateEditMessage())
+          setActionLoading(false)
+          await fetchData()
+          return
+        }
+
+        if (isOwner) {
+          // Keep the legacy direct collection link in sync for the owner only.
+          const { error: legacyUpdateError } = await supabase
+            .from('bookmarks')
+            .update({ collection_id: null })
+            .eq('id', bookmarkId)
+            .eq('collection_id', collectionId)
+
+          if (legacyUpdateError) {
+            console.error('Failed to sync legacy bookmark collection link:', legacyUpdateError)
+          }
+        }
       }
 
       // Update ref before fetchData to prevent safeguard blocking
@@ -1129,7 +1139,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
     ))
   }
 
-  const { canManageCollection, canToggleVisibility } = getCollectionPermissions(collection)
+  const { canManageCollection, canMutateBookmarkDetails, canDeleteCollection, canToggleVisibility } = getCollectionPermissions(collection)
 
   if (loading) {
     return null // Suspense will show the loader
@@ -1186,7 +1196,7 @@ export function CollectionDetailContent({ collectionId }: Props) {
                     Edit Collection
                   </Button>
                 )}
-                {canManageCollection && (
+                {canDeleteCollection && (
                   <Button
                     variant="secondary"
                     onClick={openDeleteModal}
@@ -1388,41 +1398,45 @@ export function CollectionDetailContent({ collectionId }: Props) {
                       </div>
                       {!selectionMode && (
                         <div className="flex items-center gap-2 flex-shrink-0" style={{ pointerEvents: 'auto', zIndex: 10 }}>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              toggleFavorite(bookmark.id, bookmark.is_favorite)
-                            }}
-                            className="p-2 rounded-lg transition-all hover:bg-gray-100 dark:hover:bg-gray-800"
-                            title={bookmark.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
-                            style={{ cursor: 'pointer', pointerEvents: 'auto' }}
-                          >
-                            <svg
-                              className={`w-5 h-5 ${bookmark.is_favorite ? 'text-yellow-500' : 'text-gray-400'}`}
-                              fill={bookmark.is_favorite ? "currentColor" : "none"}
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
+                          {canMutateBookmarkDetails && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                toggleFavorite(bookmark.id, bookmark.is_favorite)
+                              }}
+                              className="p-2 rounded-lg transition-all hover:bg-gray-100 dark:hover:bg-gray-800"
+                              title={bookmark.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
+                              style={{ cursor: 'pointer', pointerEvents: 'auto' }}
                             >
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
-                            </svg>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              removeFromCollection(bookmark.id)
-                            }}
-                            className="p-2 rounded-lg transition-all hover:bg-gray-100 dark:hover:bg-gray-800"
-                            title="Remove from collection"
-                            style={{ cursor: 'pointer', pointerEvents: 'auto', color: 'var(--text-secondary)' }}
-                            onMouseEnter={(e) => { e.currentTarget.style.color = '#dc2626' }}
-                            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-secondary)' }}
-                          >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
+                              <svg
+                                className={`w-5 h-5 ${bookmark.is_favorite ? 'text-yellow-500' : 'text-gray-400'}`}
+                                fill={bookmark.is_favorite ? "currentColor" : "none"}
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                              </svg>
+                            </button>
+                          )}
+                          {canManageCollection && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                removeFromCollection(bookmark.id)
+                              }}
+                              className="p-2 rounded-lg transition-all hover:bg-gray-100 dark:hover:bg-gray-800"
+                              title="Remove from collection"
+                              style={{ cursor: 'pointer', pointerEvents: 'auto', color: 'var(--text-secondary)' }}
+                              onMouseEnter={(e) => { e.currentTarget.style.color = '#dc2626' }}
+                              onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-secondary)' }}
+                            >
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          )}
                           <a
                             href={bookmark.url}
                             target="_blank"
