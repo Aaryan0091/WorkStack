@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { LoginForm } from '@/components/auth/login-form'
 import { SignupForm } from '@/components/auth/signup-form'
 import { GuestSyncPrompt } from '@/components/guest-sync-prompt'
@@ -145,7 +146,7 @@ export default function LoginPage() {
 
           {/* Terms */}
           <p className="text-xs text-center mt-6" style={{ color: 'var(--text-secondary)' }}>
-            By continuing, you agree to our Terms of Service and Privacy Policy
+            By continuing, you agree to our Terms of Service and <Link href="/privacy" className="underline hover:text-blue-500 transition-colors">Privacy Policy</Link>
           </p>
         </div>
       </div>
