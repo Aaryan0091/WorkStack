@@ -19,6 +19,7 @@ import {
   UserPlus,
   ArrowRight,
   ChevronUp,
+  User,
 } from 'lucide-react'
 
 interface NavItem {
@@ -26,6 +27,12 @@ interface NavItem {
   label: string
   icon: React.ComponentType<{ className?: string }>
   color: string
+}
+
+interface SavedAccount {
+  email: string
+  name: string
+  avatar_url?: string
 }
 
 const navItems: NavItem[] = [
@@ -58,23 +65,28 @@ let cachedUserIdentity: CachedUserIdentity | null = null
 let userIdentityFetchInProgress = false
 
 function getInitials(name: string | null, email: string | null): string {
-  const emailLocalPart = email?.split('@')[0]?.trim()
-  if (emailLocalPart) {
-    return emailLocalPart.replace(/[^A-Za-z0-9]/g, '').slice(0, 1).toUpperCase()
-  }
-
+  // First, try to get initials from the name
   const cleanedName = normalizeDisplayName(name)
   if (cleanedName) {
     const parts = cleanedName.split(/\s+/).filter(Boolean)
+
+    // If name has multiple words, take first letter of first two words (e.g., "John Doe" -> "JD")
     if (parts.length >= 2) {
-      const initials = parts.slice(0, 1).map((part) => part[0]?.toUpperCase() ?? '').join('')
+      const initials = parts.slice(0, 2).map((part) => part[0]?.toUpperCase() ?? '').join('')
       if (initials) return initials
     }
 
+    // If single word name, take first letter
     const condensedName = parts[0].replace(/[^A-Za-z0-9]/g, '')
     if (condensedName) {
       return condensedName.slice(0, 1).toUpperCase()
     }
+  }
+
+  // Fallback to email if no name available
+  const emailLocalPart = email?.split('@')[0]?.trim()
+  if (emailLocalPart) {
+    return emailLocalPart.replace(/[^A-Za-z0-9]/g, '').slice(0, 1).toUpperCase()
   }
 
   return 'U'
@@ -87,9 +99,17 @@ async function getCachedUserIdentity(): Promise<CachedUserIdentity | null> {
   userIdentityFetchInProgress = true
   try {
     const { data: { user } } = await supabase.auth.getUser()
+    // Try different possible metadata fields for name
+    const metadata = user?.user_metadata || {}
+    const name =
+      normalizeDisplayName(metadata.name) ||
+      normalizeDisplayName(metadata.full_name) ||
+      normalizeDisplayName(metadata.given_name) ||
+      normalizeDisplayName(metadata.family_name)
+
     cachedUserIdentity = {
       email: user?.email || null,
-      name: normalizeDisplayName(user?.user_metadata?.name) || normalizeDisplayName(user?.user_metadata?.full_name),
+      name,
     }
     return cachedUserIdentity
   } finally {
@@ -104,11 +124,24 @@ function clearCachedUserIdentity() {
 
 function getUserIdentityFromSessionUser(user: {
   email?: string | null
-  user_metadata?: { name?: string | null; full_name?: string | null } | null
+  user_metadata?: {
+    name?: string | null
+    full_name?: string | null
+    given_name?: string | null
+    family_name?: string | null
+  } | null
 } | null): CachedUserIdentity {
+  // Try different possible metadata fields for name
+  const metadata = user?.user_metadata || {}
+  const name =
+    normalizeDisplayName(metadata.name) ||
+    normalizeDisplayName(metadata.full_name) ||
+    normalizeDisplayName(metadata.given_name) ||
+    normalizeDisplayName(metadata.family_name)
+
   return {
     email: user?.email || null,
-    name: normalizeDisplayName(user?.user_metadata?.name) || normalizeDisplayName(user?.user_metadata?.full_name),
+    name,
   }
 }
 
@@ -165,11 +198,22 @@ export function Sidebar() {
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false)
   const [isProfileMenuClosing, setIsProfileMenuClosing] = useState(false)
+  const [showSwitchProfileModal, setShowSwitchProfileModal] = useState(false)
   const profileMenuRef = useRef<HTMLDivElement | null>(null)
   const profileTriggerRef = useRef<HTMLButtonElement | null>(null)
   const profilePanelRef = useRef<HTMLDivElement | null>(null)
   const profileMenuCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [profileMenuStyle, setProfileMenuStyle] = useState<CSSProperties | null>(null)
+
+  // Get saved accounts from localStorage
+  const getSavedAccounts = useCallback((): SavedAccount[] => {
+    try {
+      const saved = localStorage.getItem('workstack_saved_accounts')
+      return saved ? JSON.parse(saved) : []
+    } catch {
+      return []
+    }
+  }, [])
 
   const applyUserIdentity = (identity: CachedUserIdentity | null) => {
     setEmail(identity?.email || '')
@@ -191,10 +235,18 @@ export function Sidebar() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      const identity = getUserIdentityFromSessionUser(session?.user ?? null)
-      cachedUserIdentity = identity
-      applyUserIdentity(identity)
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      // Force refresh cache on sign in to get fresh data
+      if (event === 'SIGNED_IN') {
+        clearCachedUserIdentity()
+        getCachedUserIdentity().then(identity => {
+          applyUserIdentity(identity)
+        }).catch(() => {})
+      } else {
+        const identity = getUserIdentityFromSessionUser(session?.user ?? null)
+        cachedUserIdentity = identity
+        applyUserIdentity(identity)
+      }
     })
 
     // Prefetch all routes on mount for instant navigation
@@ -318,11 +370,42 @@ export function Sidebar() {
 
   const handleSwitchProfile = async () => {
     closeProfileMenu()
-    clearCachedUserIdentity()
-    applyUserIdentity(null)
-    await supabase.auth.signOut()
-    localStorage.removeItem('workstack_sync_prompt_shown')
+    setShowSwitchProfileModal(true)
+  }
+
+  const handleAddAccount = async () => {
+    setShowSwitchProfileModal(false)
+    // Save current session before signing out
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const savedAccounts = getSavedAccounts()
+        const currentAccount: SavedAccount = {
+          email: user.email || '',
+          name: user.user_metadata?.name || user.email?.split('@')[0] || '',
+          avatar_url: user.user_metadata?.avatar_url
+        }
+        // Update or add current account
+        const existingIndex = savedAccounts.findIndex((acc: SavedAccount) => acc.email === currentAccount.email)
+        if (existingIndex >= 0) {
+          savedAccounts[existingIndex] = { ...savedAccounts[existingIndex], ...currentAccount }
+        } else {
+          savedAccounts.push(currentAccount)
+        }
+        localStorage.setItem('workstack_saved_accounts', JSON.stringify(savedAccounts))
+      }
+    } catch (e) {
+      console.error('Failed to save account:', e)
+    }
+    // Redirect to login to add a new account
     window.location.href = '/login'
+  }
+
+  const handleSwitchToAccount = async (account: SavedAccount) => {
+    setShowSwitchProfileModal(false)
+    // For now, we'll just redirect to login with the email pre-filled
+    // In a real implementation, you'd want to use Supabase's session management
+    window.location.href = `/login?email=${encodeURIComponent(account.email)}`
   }
 
   const profileInitials = getInitials(displayName || null, email || null)
@@ -464,12 +547,6 @@ export function Sidebar() {
       </nav>
 
       <div className={`p-4 border-t sidebar-border ${isCollapsed ? 'justify-center' : ''}`}>
-        {email && (
-          <p className={`text-xs truncate mb-3 px-3 py-2 rounded-lg ${isCollapsed ? 'hidden' : ''}`} style={{
-            color: 'var(--text-secondary)',
-            background: 'rgba(var(--bg-secondary-rgb), 0.4)'
-          }}>{email}</p>
-        )}
         {email ? (
           <div className="relative" ref={profileMenuRef}>
             <button
@@ -545,6 +622,26 @@ export function Sidebar() {
                   ...profileMenuStyle,
                 }}
               >
+                {/* Profile Header */}
+                <div className="px-4 py-4 border-b" style={{ borderColor: 'rgba(var(--border-color-rgb), 0.5)' }}>
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="flex items-center justify-center shrink-0 w-12 h-12 rounded-full"
+                      style={{
+                        background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.92) 0%, rgba(14, 165, 233, 0.92) 100%)',
+                        boxShadow: '0 10px 22px rgba(14, 165, 233, 0.18)'
+                      }}
+                    >
+                      <span className="text-sm font-semibold tracking-[0.08em] text-white">{profileInitials}</span>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{profileLabel}</p>
+                      <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>{email}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Menu Actions */}
                 <div className="p-2">
                   <button
                     type="button"
@@ -648,6 +745,87 @@ export function Sidebar() {
         )}
       </div>
 
+      {/* Switch Profile Modal */}
+      <Modal isOpen={showSwitchProfileModal} onClose={() => setShowSwitchProfileModal(false)} title="Switch Profile">
+        <div className="space-y-5">
+          {/* Header with icon */}
+          <div className="text-center">
+            <div className="inline-flex items-center justify-center w-14 h-14 rounded-full mb-3" style={{
+              backgroundColor: 'rgba(59, 130, 246, 0.15)'
+            }}>
+              <User className="w-6 h-6" style={{ color: 'var(--color-primary)' }} />
+            </div>
+            <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Switch to another account</h2>
+            <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>Choose an account or add a new one</p>
+          </div>
+
+          {/* Saved accounts list */}
+          <div className="space-y-2 max-h-60 overflow-y-auto">
+            {getSavedAccounts().length === 0 ? (
+              <div className="text-center py-8" style={{ color: 'var(--text-secondary)' }}>
+                <p className="text-sm">No saved accounts yet</p>
+              </div>
+            ) : (
+              getSavedAccounts().map((account: SavedAccount) => (
+                <button
+                  key={account.email}
+                  onClick={() => handleSwitchToAccount(account)}
+                  className="w-full flex items-center gap-3 p-3 rounded-xl text-left transition-all duration-200 hover:scale-[1.02]"
+                  style={{
+                    backgroundColor: 'rgba(var(--bg-secondary-rgb), 0.5)',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(var(--bg-secondary-rgb), 0.8)'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = 'rgba(var(--bg-secondary-rgb), 0.5)'
+                  }}
+                >
+                  <div
+                    className="flex items-center justify-center shrink-0 w-10 h-10 rounded-full"
+                    style={{
+                      background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.92) 0%, rgba(14, 165, 233, 0.92) 100%)'
+                    }}
+                  >
+                    <span className="text-sm font-semibold text-white">
+                      {getInitials(account.name, account.email)}
+                    </span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold truncate">{account.name}</p>
+                    <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>{account.email}</p>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+
+          {/* Add account button */}
+          <button
+            onClick={handleAddAccount}
+            className="w-full flex items-center justify-center gap-2 p-3 rounded-xl font-medium transition-all duration-200 hover:scale-[1.02] border-2 border-dashed"
+            style={{
+              borderColor: 'var(--border-color)',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = 'var(--color-primary)'
+              e.currentTarget.style.color = 'var(--color-primary)'
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = 'var(--border-color)'
+              e.currentTarget.style.color = 'var(--text-secondary)'
+            }}
+          >
+            <UserPlus className="w-5 h-5" />
+            <span>Add account</span>
+          </button>
+        </div>
+      </Modal>
+
       {/* Logout Confirmation Modal */}
       <Modal isOpen={showLogoutModal} onClose={() => setShowLogoutModal(false)} title="Confirm Logout">
         <div className="space-y-5">
@@ -664,7 +842,7 @@ export function Sidebar() {
           {/* Warning about guest data */}
           <div className="p-4 rounded-lg" style={{ backgroundColor: 'var(--bg-warm)', border: '1px solid var(--border-color)' }}>
             <div className="flex gap-3">
-              <div className="flex-shrink-0">
+              <div className="shrink-0">
                 <span className="text-xl" style={{ color: 'var(--color-amber)' }}>⚠️</span>
               </div>
               <div>

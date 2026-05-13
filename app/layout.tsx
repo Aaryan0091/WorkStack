@@ -59,9 +59,62 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body
-        className="antialiased"
-      >
+      <head>
+        {/* Inline script to set theme immediately - blocking and synchronous */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  const theme = localStorage.getItem('theme');
+                  const isDark = theme === 'dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                  if (isDark) {
+                    document.documentElement.classList.add('dark');
+                  } else {
+                    document.documentElement.classList.remove('dark');
+                  }
+                } catch (e) {
+                  console.error('Failed to set theme:', e);
+                }
+              })();
+            `,
+          }}
+        />
+        {/* Inline style to ensure CSS variables are set correctly even before JS executes */}
+        <style
+          dangerouslySetInnerHTML={{
+            __html: `
+              :root {
+                --bg-primary: #ffffff;
+                --bg-primary-rgb: 255, 255, 255;
+                --bg-secondary: #f9fafb;
+                --bg-secondary-rgb: 249, 250, 251;
+                --bg-warm: #fef9f5;
+                --text-primary: #111827;
+                --text-secondary: #6b7280;
+                --border-color: #e5e7eb;
+                --border-color-rgb: 229, 231, 235;
+              }
+              .dark {
+                --bg-primary: #111827;
+                --bg-primary-rgb: 17, 24, 39;
+                --bg-secondary: #1f2937;
+                --bg-secondary-rgb: 31, 41, 55;
+                --bg-warm: #1f2937;
+                --text-primary: #f9fafb;
+                --text-secondary: #9ca3af;
+                --border-color: #374151;
+                --border-color-rgb: 55, 65, 81;
+              }
+              body {
+                color: var(--text-primary);
+                background: var(--bg-primary);
+              }
+            `,
+          }}
+        />
+      </head>
+      <body className="antialiased">
         <AnimatedBackground />
         <ThemeProvider
           attribute="class"
