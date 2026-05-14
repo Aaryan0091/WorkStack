@@ -13,6 +13,8 @@ export default function ExtensionPage() {
   const [supported, setSupported] = useState<boolean | null>(true)
   const [mounted, setMounted] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [showManual, setShowManual] = useState(false)
   const extensionInstalled = useExtensionStatusStore((state) => state.installed)
   const ensureExtensionStatusListening = useExtensionStatusStore((state) => state.ensureListening)
   const refreshExtensionInstalled = useExtensionStatusStore((state) => state.refreshInstalled)
@@ -20,7 +22,6 @@ export default function ExtensionPage() {
   const [scrollY, setScrollY] = useState(0)
   const [debugInfo, setDebugInfo] = useState<Record<string, string>>({})
   const [showDebug, setShowDebug] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   const updateDebugInfo = useCallback(() => {
     const info: Record<string, string> = {
@@ -202,33 +203,28 @@ export default function ExtensionPage() {
                   Ready to install?
                 </h2>
                 <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
-                  <button
-                    onClick={downloadExtension}
-                    disabled={downloading || !mounted || supported === false}
+                  <a
+                    href="https://chrome.google.com/webstore/detail/YOUR_EXTENSION_ID_HERE" // TODO: Add actual Chrome Web Store URL
+                    target="_blank"
+                    rel="noopener noreferrer"
                     className="px-8 py-4 rounded-xl font-semibold text-lg transition-all duration-75 hover:scale-105 active:scale-95 flex items-center gap-3"
                     style={{
                       background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)',
                       color: 'white',
-                      cursor: (downloading || !mounted || supported === false) ? 'not-allowed' : 'pointer',
-                      opacity: (downloading || !mounted || supported === false) ? 0.6 : 1
+                      cursor: (!mounted || supported === false) ? 'not-allowed' : 'pointer',
+                      opacity: (!mounted || supported === false) ? 0.6 : 1,
+                      pointerEvents: (!mounted || supported === false) ? 'none' : 'auto'
                     }}
                   >
-                    {downloading ? (
-                      <>
-                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        Downloading...
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                        </svg>
-                        Download Extension
-                      </>
-                    )}
-                  </button>
+                    <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm0 22C6.486 22 2 17.514 2 12S6.486 2 12 2s10 4.486 10 10-4.486 10-10 10z" />
+                      <path d="M12 4c-4.411 0-8 3.589-8 8s3.589 8 8 8 8-3.589 8-8-3.589-8-8-8zm0 14c-3.309 0-6-2.691-6-6s2.691-6 6-6 6 2.691 6 6-2.691 6-6 6z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                    Install from Web Store
+                  </a>
                   <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                    ZIP file • Works on Chrome, Edge, Brave
+                    Available for Chrome & Brave • Edge coming soon!
                   </span>
                 </div>
               </div>
@@ -266,13 +262,13 @@ export default function ExtensionPage() {
                 </div>
                 <div className="flex-1">
                   <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
-                    Download Extension
+                    Install from Web Store
                   </h3>
                   <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
-                    Click the download button above to get the extension ZIP file.
+                    Click the install button above to open the Chrome Web Store and click &quot;Add to Chrome&quot;.
                   </p>
                   <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    💡 The file is named <code className="bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">workstack-extension.zip</code>
+                    💡 Edge users can also install from the Chrome Web Store, but an Edge Add-ons version is coming soon!
                   </p>
                 </div>
               </div>
@@ -284,16 +280,13 @@ export default function ExtensionPage() {
                 </div>
                 <div className="flex-1">
                   <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
-                    Extract ZIP File
+                    Pin the Extension
                   </h3>
                   <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
-                    Find <code className="bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">workstack-extension.zip</code> in your Downloads folder and extract it.
+                    Click the puzzle piece icon 🧩 in your browser toolbar, find WorkStack, and click the pin icon 📌.
                   </p>
                   <p className="text-xs mb-2" style={{ color: 'var(--text-secondary)' }}>
-                    💡 Right-click ZIP file → &quot;Extract All&quot; (Windows) or double-click to extract (Mac)
-                  </p>
-                  <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    📁 You will get a <code className="bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">workstack-extension</code> folder - remember its location!
+                    💡 This makes it easy to access the extension whenever you need it.
                   </p>
                 </div>
               </div>
@@ -305,12 +298,101 @@ export default function ExtensionPage() {
                 </div>
                 <div className="flex-1">
                   <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                    Start Tracking
+                  </h3>
+                  <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
+                    Click the WorkStack extension icon in your toolbar, log into your account, and you are all set!
+                  </p>
+                  <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    🚀 Your browsing activity will now be securely tracked and accessible from your dashboard.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Manual Installation Toggle */}
+        {!extensionInstalled && mounted && supported && (
+          <div className="text-center mb-8">
+            <button
+              onClick={() => setShowManual(!showManual)}
+              className="text-sm px-4 py-2 rounded-lg transition-colors border"
+              style={{
+                backgroundColor: 'var(--bg-secondary)',
+                color: 'var(--text-secondary)',
+                borderColor: 'var(--border-color)',
+                cursor: 'pointer'
+              }}
+            >
+              {showManual ? 'Hide Manual Installation' : 'Looking for manual installation (ZIP)?'}
+            </button>
+          </div>
+        )}
+
+        {/* Manual Installation Steps */}
+        {!extensionInstalled && mounted && supported && showManual && (
+          <div className="rounded-xl shadow-lg p-8 mb-8" style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)' }}>
+            <h2 className="text-2xl font-bold mb-6" style={{ color: 'var(--text-primary)' }}>
+              Manual Installation (Developer Mode)
+            </h2>
+            
+            <div className="mb-8">
+               <button
+                 onClick={downloadExtension}
+                 disabled={downloading}
+                 className="px-6 py-3 rounded-xl font-semibold text-sm transition-all duration-75 hover:scale-105 active:scale-95 flex items-center gap-2"
+                 style={{
+                   background: 'var(--bg-secondary)',
+                   color: 'var(--text-primary)',
+                   border: '1px solid var(--border-color)',
+                   cursor: downloading ? 'not-allowed' : 'pointer',
+                   opacity: downloading ? 0.6 : 1
+                 }}
+               >
+                 {downloading ? (
+                   <>
+                     <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                     Downloading...
+                   </>
+                 ) : (
+                   '⬇️ Download ZIP File'
+                 )}
+               </button>
+            </div>
+
+            <div className="space-y-6">
+              {/* Step 1 */}
+              <div className="flex gap-4">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}>
+                  1
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                    Extract ZIP File
+                  </h3>
+                  <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
+                    Find <code className="bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">workstack-extension.zip</code> in your Downloads folder and extract it.
+                  </p>
+                </div>
+              </div>
+
+              {/* Step 2 */}
+              <div className="flex gap-4">
+                <div className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}>
+                  2
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
                     Open Extensions Page
                   </h3>
                   <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
-                    Click a card below to copy the URL, then paste it in your browser address bar:
+                    Go to <code className="bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">chrome://extensions/</code> (or your browser equivalent).
                   </p>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+                    💡 You can also use the copy buttons below:
+                  </p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
                     {[
                       { name: 'Chrome', url: 'chrome://extensions/', icon: '🌐', color: '#4285f4' },
                       { name: 'Edge', url: 'edge://extensions/', icon: '📘', color: '#0078d4' },
@@ -320,59 +402,48 @@ export default function ExtensionPage() {
                       <button
                         key={item.name}
                         onClick={() => copyToClipboard(item.url)}
-                        className="p-3 rounded-xl text-center transition-all hover:scale-105 active:scale-95 flex flex-col items-center gap-1"
+                        className="p-2 rounded-xl text-center transition-all hover:scale-105 active:scale-95 flex flex-col items-center gap-1"
                         style={{
                           backgroundColor: 'var(--bg-secondary)',
                           cursor: 'pointer',
-                          border: `2px solid ${item.color}20`
+                          border: `1px solid ${item.color}20`
                         }}
                       >
-                        <span className="text-2xl">{item.icon}</span>
-                        <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{item.name}</p>
-                        <p className="text-xs" style={{ color: item.color }}>{item.url}</p>
-                        <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>Click to copy</p>
+                        <span className="text-lg">{item.icon}</span>
+                        <p className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{item.name}</p>
                       </button>
                     ))}
                   </div>
                 </div>
               </div>
 
-              {/* Step 4 - Developer Mode */}
+              {/* Step 3 */}
               <div className="flex gap-4">
-                <div className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style={{ backgroundColor: '#3b82f6', color: 'white' }}>
-                  4
+                <div className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}>
+                  3
                 </div>
                 <div className="flex-1">
                   <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
                     Enable Developer Mode
                   </h3>
                   <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
-                    Look for &quot;Developer mode&quot; toggle in the top-right corner and turn it on.
-                  </p>
-                  <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    💡 This allows you to load unpacked extensions from your computer
+                    Turn on the &quot;Developer mode&quot; toggle in the top right corner.
                   </p>
                 </div>
               </div>
 
-              {/* Step 5 */}
+              {/* Step 4 */}
               <div className="flex gap-4">
-                <div className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style={{ backgroundColor: '#3b82f6', color: 'white' }}>
-                  5
+                <div className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' }}>
+                  4
                 </div>
                 <div className="flex-1">
                   <h3 className="font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
-                    Load Extension
+                    Load Unpacked
                   </h3>
                   <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
-                    Click &quot;Load unpacked&quot; and select the extracted extension folder.
+                    Click &quot;Load unpacked&quot; and select the extracted folder.
                   </p>
-                  <div className="p-4 rounded-lg border-2 border-dashed flex items-center justify-center gap-3" style={{ borderColor: 'var(--border-color)' }}>
-                    <svg className="w-8 h-8" style={{ color: 'var(--text-secondary)' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v2" />
-                    </svg>
-                    <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Select workstack-extension folder</span>
-                  </div>
                 </div>
               </div>
             </div>
@@ -421,7 +492,7 @@ export default function ExtensionPage() {
                 Still not working?
               </h3>
               <ol className="list-decimal list-inside space-y-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
-                <li><strong>Remove and reinstall:</strong> Click Remove on the extension card, then load it again from the extracted folder</li>
+                <li><strong>Remove and reinstall:</strong> Remove the extension from your browser and install it again from the Web Store</li>
                 <li><strong>Check browser compatibility:</strong> Extension only works on Chrome, Edge, and Brave (not Safari or Firefox)</li>
                 <li><strong>Restart browser:</strong> Close and reopen your browser after installing the extension</li>
               </ol>
