@@ -587,8 +587,8 @@ function resumeActivity() {
     // Only resume activity if saved session belongs to current user
     // This prevents showing another user's tracked activity
     if (savedTabs.length > 0 && savedSessionUserId === currentUserId) {
-      const uniqueUrls = [...new Set(savedTabs.map(tab => tab.url))]
-      chrome.windows.create({ url: uniqueUrls, focused: true })
+      const urlsToOpen = savedTabs.map(tab => tab.url)
+      chrome.windows.create({ url: urlsToOpen, focused: true })
     } else if (savedTabs.length > 0 && savedSessionUserId !== currentUserId) {
       // Clear saved session from previous user
       chrome.storage.local.set({ savedSessionTabs: [], savedSessionUserId: null, savedSessionAt: null })
@@ -609,8 +609,7 @@ function resumeActivityWithUrls(urls) {
     const currentUserId = result.userId
 
     if (urls && urls.length > 0 && (!savedSessionUserId || savedSessionUserId === currentUserId)) {
-      const uniqueUrls = [...new Set(urls)]
-      chrome.windows.create({ url: uniqueUrls, focused: true })
+      chrome.windows.create({ url: urls, focused: true })
     }
   })
 }
@@ -623,15 +622,14 @@ function openSavedTabs() {
     // Only open tabs if saved session belongs to current user
     if (savedTabs.length === 0 || (savedUserId && savedUserId !== currentUserId)) return
 
-    const uniqueUrls = [...new Set(savedTabs.map(tab => tab.url))]
-    chrome.windows.create({ url: uniqueUrls, focused: true })
+    const urlsToOpen = savedTabs.map(tab => tab.url)
+    chrome.windows.create({ url: urlsToOpen, focused: true })
   })
 }
 
 function openUrls(urls) {
   if (!urls || urls.length === 0) return
-  const uniqueUrls = [...new Set(urls)]
-  chrome.windows.create({ url: uniqueUrls, focused: true })
+  chrome.windows.create({ url: urls, focused: true })
 }
 
 // ========== EVENT LISTENERS ==========

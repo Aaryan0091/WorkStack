@@ -97,7 +97,8 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const [showPermissionModal, setShowPermissionModal] = useState(false)
   const [showPreviousActivityModal, setShowPreviousActivityModal] = useState(false)
   const [showResumeModal, setShowResumeModal] = useState(false)
-  const [savedTabsData, setSavedTabsData] = useState<{ url: string; title: string; domain: string }[]>([])
+  const [savedTabsData, setSavedTabsData] = useState<{ id?: string; url: string; title: string; domain: string; duration_seconds?: number }[]>([])
+  const [autoSelectCount, setAutoSelectCount] = useState(10)
   const [selectedResumeTabs, setSelectedResumeTabs] = useState<Set<string>>(new Set())
   const [loadingResumeTabs, setLoadingResumeTabs] = useState(false)
   const [previousActivityData, setPreviousActivityData] = useState<Array<{
@@ -156,39 +157,15 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const [isChromium, setIsChromium] = useState(false)
 
   const groupedPreviousActivity = useMemo(() => {
-    const groupedByUrl = new Map<string, {
-      domain: string
-      url: string
-      title: string
-      totalSeconds: number
-      visitCount: number
-      lastVisited: string
-    }>()
-
-    previousActivityData.forEach((item) => {
-      const urlKey = item.url
-
-      if (!groupedByUrl.has(urlKey)) {
-        groupedByUrl.set(urlKey, {
-          domain: item.domain,
-          url: item.url,
-          title: item.title || item.url,
-          totalSeconds: item.duration_seconds || 0,
-          visitCount: 1,
-          lastVisited: item.started_at
-        })
-      } else {
-        const existing = groupedByUrl.get(urlKey)!
-        existing.totalSeconds += item.duration_seconds || 0
-        existing.visitCount += 1
-        if (item.started_at > existing.lastVisited) {
-          existing.lastVisited = item.started_at
-          existing.title = item.title || item.url
-        }
-      }
-    })
-
-    return Array.from(groupedByUrl.values()).sort((a, b) => b.totalSeconds - a.totalSeconds)
+    return previousActivityData.map((item, index) => ({
+      id: item.id || `hist-${index}-${Math.random().toString(36).substr(2, 9)}`,
+      domain: item.domain,
+      url: item.url,
+      title: item.title || item.url,
+      totalSeconds: item.duration_seconds || 0,
+      visitCount: 1,
+      lastVisited: item.started_at
+    })).sort((a, b) => b.totalSeconds - a.totalSeconds)
   }, [previousActivityData])
 
   // Check if browser is Chromium-based after mount (client-only)
@@ -674,8 +651,12 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         // Ignore error if extension is disconnected
       }
       if (response?.success && response.savedTabs) {
-        setSavedTabsData(response.savedTabs)
-        setSelectedResumeTabs(new Set(response.savedTabs.map((t: any) => t.url)))
+        const tabsWithIds = response.savedTabs.map((tab: any, idx: number) => ({
+          ...tab,
+          id: `tab-${idx}-${Math.random().toString(36).substr(2, 9)}`
+        }))
+        setSavedTabsData(tabsWithIds)
+        setSelectedResumeTabs(new Set(tabsWithIds.map((t: any) => t.id)))
       } else {
         setSavedTabsData([])
       }
@@ -683,16 +664,22 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     })
   }
 
-  const toggleResumeTabSelection = (url: string) => {
+  const toggleResumeTabSelection = (id: string) => {
     setSelectedResumeTabs(prev => {
       const next = new Set(prev)
-      if (next.has(url)) {
-        next.delete(url)
+      if (next.has(id)) {
+        next.delete(id)
       } else {
-        next.add(url)
+        next.add(id)
       }
       return next
     })
+  }
+
+  const handleAutoSelect = () => {
+    const sorted = [...savedTabsData].sort((a, b) => (b.duration_seconds || 0) - (a.duration_seconds || 0))
+    const topIds = sorted.slice(0, autoSelectCount).map(t => t.id as string)
+    setSelectedResumeTabs(new Set(topIds))
   }
 
   const resumeSelectedActivity = () => {
@@ -702,7 +689,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     const extensionId = getExtensionId()
     if (!extensionId) return
 
-    const urlsToOpen = Array.from(selectedResumeTabs)
+    const urlsToOpen = savedTabsData.filter(t => t.id && selectedResumeTabs.has(t.id)).map(t => t.url)
     
     chrome.runtime?.sendMessage?.(extensionId, { action: 'resumeActivityWithUrls', urls: urlsToOpen }, (response: any) => {
       if (chrome.runtime?.lastError) {
@@ -1682,7 +1669,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
               }}>
                 {groupedPreviousActivity.map((item) => (
                   <a
-                    key={item.url}
+                    key={item.id}
                     href={item.url}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -1702,11 +1689,6 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                             <p className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
                               {getDisplayTitle(item.url, item.title)}
                             </p>
-                            {item.visitCount > 1 && (
-                              <span className="text-xs px-2 py-0.5 rounded-full flex-shrink-0" style={{ backgroundColor: 'rgba(139, 92, 246, 0.15)', color: '#8b5cf6' }}>
-                                {item.visitCount} visits
-                              </span>
-                            )}
                           </div>
                           <p className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
                             {item.domain}
@@ -1771,23 +1753,49 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
             </div>
           ) : (
             <>
+              {savedTabsData.length > 10 && (
+                <div className="flex items-center justify-between mb-2 p-3 rounded-lg border" style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Auto-select top:</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max={savedTabsData.length}
+                      value={autoSelectCount}
+                      onChange={(e) => setAutoSelectCount(parseInt(e.target.value) || 1)}
+                      className="w-16 px-2 py-1 text-sm border rounded bg-transparent focus:outline-none focus:ring-1 focus:ring-purple-500"
+                      style={{ color: 'var(--text-primary)', borderColor: 'var(--border-color)' }}
+                    />
+                    <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>tabs</span>
+                  </div>
+                  <Button size="sm" onClick={handleAutoSelect} style={{ padding: '0.25rem 0.75rem', height: 'auto', fontSize: '0.875rem' }}>
+                    Select By Time
+                  </Button>
+                </div>
+              )}
               <div className="max-h-96 overflow-y-auto pr-2" style={{
                 scrollbarWidth: 'thin',
                 scrollbarColor: 'rgba(139, 92, 246, 0.3) transparent'
               }}>
-                {savedTabsData.map((item) => (
+                {[...savedTabsData].sort((a, b) => {
+                  const aSelected = a.id ? selectedResumeTabs.has(a.id) : false;
+                  const bSelected = b.id ? selectedResumeTabs.has(b.id) : false;
+                  if (aSelected && !bSelected) return -1;
+                  if (!aSelected && bSelected) return 1;
+                  return 0;
+                }).map((item) => (
                   <div
-                    key={item.url}
-                    onClick={() => toggleResumeTabSelection(item.url)}
+                    key={item.id}
+                    onClick={() => item.id && toggleResumeTabSelection(item.id)}
                     className="flex items-center gap-3 p-3 rounded-lg border transition-all duration-75 mb-2 cursor-pointer hover:shadow-sm"
                     style={{
-                      backgroundColor: selectedResumeTabs.has(item.url) ? 'rgba(139, 92, 246, 0.05)' : 'var(--bg-secondary)',
-                      borderColor: selectedResumeTabs.has(item.url) ? 'rgba(139, 92, 246, 0.5)' : 'var(--border-color)'
+                      backgroundColor: item.id && selectedResumeTabs.has(item.id) ? 'rgba(139, 92, 246, 0.05)' : 'var(--bg-secondary)',
+                      borderColor: item.id && selectedResumeTabs.has(item.id) ? 'rgba(139, 92, 246, 0.5)' : 'var(--border-color)'
                     }}
                   >
                     <input
                       type="checkbox"
-                      checked={selectedResumeTabs.has(item.url)}
+                      checked={item.id ? selectedResumeTabs.has(item.id) : false}
                       readOnly
                       className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500"
                     />
@@ -1801,8 +1809,11 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                       <p className="font-medium truncate text-sm" style={{ color: 'var(--text-primary)' }}>
                         {item.title || item.url}
                       </p>
-                      <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
-                        {item.domain}
+                      <p className="text-xs truncate flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
+                        <span>{item.domain}</span>
+                        {item.duration_seconds !== undefined && item.duration_seconds > 0 && (
+                          <span className="opacity-75">• {Math.floor(item.duration_seconds / 60)}m {item.duration_seconds % 60}s</span>
+                        )}
                       </p>
                     </div>
                   </div>
