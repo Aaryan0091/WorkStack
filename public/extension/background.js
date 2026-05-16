@@ -265,6 +265,18 @@ chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => 
   } else if (request.action === 'openSavedTabs') {
     openSavedTabs()
     sendResponse({ success: true })
+  } else if (request.action === 'resumeActivityWithUrls') {
+    resumeActivityWithUrls(request.urls)
+    sendResponse({ success: true })
+  } else if (request.action === 'getSavedTabs') {
+    chrome.storage.local.get(['savedSessionTabs', 'savedSessionUserId', 'userId'], (result) => {
+      const savedUserId = result.savedSessionUserId
+      const currentUserId = result.userId
+      const isValid = result.savedSessionTabs && result.savedSessionTabs.length > 0 &&
+        (!savedUserId || savedUserId === currentUserId)
+      sendResponse({ success: true, savedTabs: isValid ? result.savedSessionTabs : [] })
+    })
+    return true
   } else if (request.action === 'toggleAutomaticMode') {
     toggleAutomaticMode()
     sendResponse({ success: true, isAutomaticMode })
@@ -295,7 +307,7 @@ chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => 
     })
     return true
   } else if (request.action === 'ping') {
-    sendResponse({ success: true, version: '4.3.0' })
+    sendResponse({ success: true, version: '5.2.0' })
   } else if (request.action === 'clearUserData') {
     // Clear user data on logout
     userId = null
@@ -381,6 +393,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   } else if (request.action === 'openSavedTabs') {
     openSavedTabs()
     sendResponse({ success: true })
+  } else if (request.action === 'resumeActivityWithUrls') {
+    resumeActivityWithUrls(request.urls)
+    sendResponse({ success: true })
+  } else if (request.action === 'getSavedTabs') {
+    chrome.storage.local.get(['savedSessionTabs', 'savedSessionUserId', 'userId'], (result) => {
+      const savedUserId = result.savedSessionUserId
+      const currentUserId = result.userId
+      const isValid = result.savedSessionTabs && result.savedSessionTabs.length > 0 &&
+        (!savedUserId || savedUserId === currentUserId)
+      sendResponse({ success: true, savedTabs: isValid ? result.savedSessionTabs : [] })
+    })
+    return true
   } else if (request.action === 'toggleTracking') {
     if (isTracking) {
       stopTracking()
@@ -576,6 +600,18 @@ function resumeActivity() {
     chrome.storage.local.set({ isTracking, isPaused: false })
     chrome.action.setBadgeText({ text: 'ON' })
     chrome.action.setBadgeBackgroundColor({ color: '#22c55e' })
+  })
+}
+
+function resumeActivityWithUrls(urls) {
+  chrome.storage.local.get(['savedSessionUserId', 'userId'], (result) => {
+    const savedSessionUserId = result.savedSessionUserId
+    const currentUserId = result.userId
+
+    if (urls && urls.length > 0 && (!savedSessionUserId || savedSessionUserId === currentUserId)) {
+      const uniqueUrls = [...new Set(urls)]
+      chrome.windows.create({ url: uniqueUrls, focused: true })
+    }
   })
 }
 

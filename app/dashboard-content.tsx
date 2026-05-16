@@ -96,6 +96,10 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const [showExtensionModal, setShowExtensionModal] = useState(false)
   const [showPermissionModal, setShowPermissionModal] = useState(false)
   const [showPreviousActivityModal, setShowPreviousActivityModal] = useState(false)
+  const [showResumeModal, setShowResumeModal] = useState(false)
+  const [savedTabsData, setSavedTabsData] = useState<{ url: string; title: string; domain: string }[]>([])
+  const [selectedResumeTabs, setSelectedResumeTabs] = useState<Set<string>>(new Set())
+  const [loadingResumeTabs, setLoadingResumeTabs] = useState(false)
   const [previousActivityData, setPreviousActivityData] = useState<Array<{
     id: string
     url: string
@@ -655,16 +659,76 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     })
   }
 
-  const resumeActivity = () => {
-    const chrome = (window as typeof window & { chrome?: { runtime?: { sendMessage?: (id: string, msg: Record<string, unknown>, cb?: (r: { success?: boolean; isTracking?: boolean; isPaused?: boolean; savedSession?: boolean; sessionTabs?: unknown[] } | undefined) => void) => void; lastError?: { message?: string } } } }).chrome
+  const openResumeModal = () => {
+    const chrome = (window as typeof window & { chrome?: any }).chrome
     if (!chrome?.runtime) return
 
     const extensionId = getExtensionId()
     if (!extensionId) return
 
-    chrome.runtime?.sendMessage?.(extensionId, { action: 'openSavedTabs' }, (response: { success?: boolean; isTracking?: boolean; isPaused?: boolean; savedSession?: boolean } | undefined) => {
+    setLoadingResumeTabs(true)
+    setShowResumeModal(true)
+
+    chrome.runtime?.sendMessage?.(extensionId, { action: 'getSavedTabs' }, (response: any) => {
+      if (chrome.runtime?.lastError) {
+        // Ignore error if extension is disconnected
+      }
+      if (response?.success && response.savedTabs) {
+        setSavedTabsData(response.savedTabs)
+        setSelectedResumeTabs(new Set(response.savedTabs.map((t: any) => t.url)))
+      } else {
+        setSavedTabsData([])
+      }
+      setLoadingResumeTabs(false)
+    })
+  }
+
+  const toggleResumeTabSelection = (url: string) => {
+    setSelectedResumeTabs(prev => {
+      const next = new Set(prev)
+      if (next.has(url)) {
+        next.delete(url)
+      } else {
+        next.add(url)
+      }
+      return next
+    })
+  }
+
+  const resumeSelectedActivity = () => {
+    const chrome = (window as typeof window & { chrome?: any }).chrome
+    if (!chrome?.runtime) return
+
+    const extensionId = getExtensionId()
+    if (!extensionId) return
+
+    const urlsToOpen = Array.from(selectedResumeTabs)
+    
+    chrome.runtime?.sendMessage?.(extensionId, { action: 'resumeActivityWithUrls', urls: urlsToOpen }, (response: any) => {
+      if (chrome.runtime?.lastError) {
+        // Ignore error
+      }
       if (response?.success) {
-        // Tabs opened but tracking not started
+        setShowResumeModal(false)
+      }
+    })
+  }
+
+  const resumeAllActivity = () => {
+    const chrome = (window as typeof window & { chrome?: any }).chrome
+    if (!chrome?.runtime) return
+
+    const extensionId = getExtensionId()
+    if (!extensionId) return
+
+    const urlsToOpen = savedTabsData.map(t => t.url)
+    
+    chrome.runtime?.sendMessage?.(extensionId, { action: 'resumeActivityWithUrls', urls: urlsToOpen }, (response: any) => {
+      if (chrome.runtime?.lastError) {
+        // Ignore error
+      }
+      if (response?.success) {
+        setShowResumeModal(false)
       }
     })
   }
@@ -1183,7 +1247,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                   <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                     {hasSavedSession && (
                       <button
-                        onClick={resumeActivity}
+                        onClick={openResumeModal}
                         className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
                         style={{ backgroundColor: '#3b82f6', color: 'white', cursor: 'pointer' }}
                       >
@@ -1686,6 +1750,78 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                   className="flex-1"
                 >
                   Add In Collection
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </Modal>
+
+      <Modal isOpen={showResumeModal} onClose={() => setShowResumeModal(false)} title="Resume Activity">
+        <div className="space-y-4">
+          {loadingResumeTabs ? (
+            <div className="text-center py-8" style={{ color: 'var(--text-secondary)' }}>
+              <div className="inline-block w-6 h-6 border-2 border-purple-600 border-t-transparent rounded-full animate-spin mb-2"></div>
+              <p>Loading saved session...</p>
+            </div>
+          ) : savedTabsData.length === 0 ? (
+            <div className="text-center py-8" style={{ color: 'var(--text-secondary)' }}>
+              <p className="text-4xl mb-2">📂</p>
+              <p>No saved session found</p>
+            </div>
+          ) : (
+            <>
+              <div className="max-h-96 overflow-y-auto pr-2" style={{
+                scrollbarWidth: 'thin',
+                scrollbarColor: 'rgba(139, 92, 246, 0.3) transparent'
+              }}>
+                {savedTabsData.map((item) => (
+                  <div
+                    key={item.url}
+                    onClick={() => toggleResumeTabSelection(item.url)}
+                    className="flex items-center gap-3 p-3 rounded-lg border transition-all duration-75 mb-2 cursor-pointer hover:shadow-sm"
+                    style={{
+                      backgroundColor: selectedResumeTabs.has(item.url) ? 'rgba(139, 92, 246, 0.05)' : 'var(--bg-secondary)',
+                      borderColor: selectedResumeTabs.has(item.url) ? 'rgba(139, 92, 246, 0.5)' : 'var(--border-color)'
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedResumeTabs.has(item.url)}
+                      readOnly
+                      className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500"
+                    />
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={`https://www.google.com/s2/favicons?domain=${item.domain}&sz=32`}
+                      className="w-6 h-6 rounded flex-shrink-0"
+                      alt="Favicon"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium truncate text-sm" style={{ color: 'var(--text-primary)' }}>
+                        {item.title || item.url}
+                      </p>
+                      <p className="text-xs truncate" style={{ color: 'var(--text-secondary)' }}>
+                        {item.domain}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
+                <Button
+                  onClick={resumeSelectedActivity}
+                  disabled={selectedResumeTabs.size === 0}
+                  className="flex-1"
+                >
+                  Resume Selected ({selectedResumeTabs.size})
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={resumeAllActivity}
+                  className="flex-1"
+                >
+                  Resume All
                 </Button>
               </div>
             </>
