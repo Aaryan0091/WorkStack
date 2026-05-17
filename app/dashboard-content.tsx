@@ -1768,9 +1768,13 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                     />
                     <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>tabs</span>
                   </div>
-                  <Button size="sm" onClick={handleAutoSelect} style={{ padding: '0.25rem 0.75rem', height: 'auto', fontSize: '0.875rem' }}>
+                  <button
+                    onClick={handleAutoSelect}
+                    className="px-3 py-1.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] text-sm shadow-sm"
+                    style={{ backgroundColor: '#8b5cf6', color: 'white', cursor: 'pointer' }}
+                  >
                     Select By Time
-                  </Button>
+                  </button>
                 </div>
               )}
               <div className="max-h-96 overflow-y-auto pr-2" style={{
