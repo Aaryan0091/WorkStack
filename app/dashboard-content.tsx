@@ -238,63 +238,63 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
         return
       }
 
-    const session = await supabase.auth.getSession()
-    const token = session.data.session?.access_token
+      const session = await supabase.auth.getSession()
+      const token = session.data.session?.access_token
 
-    // Fetch stats from single optimized endpoint
-    const statsPromise = fetch('/api/stats', {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-      },
-    }).then(async (res) => {
-      if (!res.ok) {
-        console.warn('Stats API returned non-OK status:', res.status)
+      // Fetch stats from single optimized endpoint
+      const statsPromise = fetch('/api/stats', {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      }).then(async (res) => {
+        if (!res.ok) {
+          console.warn('Stats API returned non-OK status:', res.status)
+          return { total_bookmarks: 0, favorites_count: 0, unread_count: 0 }
+        }
+        return res.json()
+      }).catch((err) => {
+        console.warn('Failed to fetch stats:', err)
         return { total_bookmarks: 0, favorites_count: 0, unread_count: 0 }
+      })
+
+      // Fetch other data in parallel
+      const [recentBookmarksRes, collectionsRes, statsData] = await Promise.all([
+        supabase.from('bookmarks').select('*').eq('user_id', user.id).limit(5).order('created_at', { ascending: false }),
+        supabase.from('collections').select('*').eq('user_id', user.id),
+        statsPromise,
+      ])
+
+      // Update counts atomically from single response
+      setCounts({
+        totalBookmarks: statsData.total_bookmarks ?? 0,
+        favoritesCount: statsData.favorites_count ?? 0,
+        unreadCount: statsData.unread_count ?? 0,
+      })
+
+      if (recentBookmarksRes.data) setBookmarks(recentBookmarksRes.data)
+
+      // Handle collections - create default collection if none exist
+      let collectionsData = collectionsRes.data || []
+      if (collectionsData.length === 0) {
+        // Create default collection
+        const { data: newCollection } = await supabase
+          .from('collections')
+          .insert({
+            name: 'My Collection (default)',
+            description: 'Your first collection',
+            is_public: false,
+            share_slug: `my-collection-${generateUUID().substring(0, 8)}`,
+            share_code: Math.random().toString(36).substring(2, 10),
+            user_id: user.id,
+          })
+          .select()
+          .single()
+
+        if (newCollection) {
+          collectionsData = [newCollection]
+        }
       }
-      return res.json()
-    }).catch((err) => {
-      console.warn('Failed to fetch stats:', err)
-      return { total_bookmarks: 0, favorites_count: 0, unread_count: 0 }
-    })
-
-    // Fetch other data in parallel
-    const [recentBookmarksRes, collectionsRes, statsData] = await Promise.all([
-      supabase.from('bookmarks').select('*').eq('user_id', user.id).limit(5).order('created_at', { ascending: false }),
-      supabase.from('collections').select('*').eq('user_id', user.id),
-      statsPromise,
-    ])
-
-    // Update counts atomically from single response
-    setCounts({
-      totalBookmarks: statsData.total_bookmarks ?? 0,
-      favoritesCount: statsData.favorites_count ?? 0,
-      unreadCount: statsData.unread_count ?? 0,
-    })
-
-    if (recentBookmarksRes.data) setBookmarks(recentBookmarksRes.data)
-
-    // Handle collections - create default collection if none exist
-    let collectionsData = collectionsRes.data || []
-    if (collectionsData.length === 0) {
-      // Create default collection
-      const { data: newCollection } = await supabase
-        .from('collections')
-        .insert({
-          name: 'My Collection (default)',
-          description: 'Your first collection',
-          is_public: false,
-          share_slug: `my-collection-${generateUUID().substring(0, 8)}`,
-          share_code: Math.random().toString(36).substring(2, 10),
-          user_id: user.id,
-        })
-        .select()
-        .single()
-
-      if (newCollection) {
-        collectionsData = [newCollection]
-      }
-    }
-    setCollections(collectionsData)
+      setCollections(collectionsData)
     } catch (error) {
       console.warn('Error fetching fresh data:', error)
     }
@@ -690,7 +690,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     if (!extensionId) return
 
     const urlsToOpen = savedTabsData.filter(t => t.id && selectedResumeTabs.has(t.id)).map(t => t.url)
-    
+
     chrome.runtime?.sendMessage?.(extensionId, { action: 'resumeActivityWithUrls', urls: urlsToOpen }, (response: any) => {
       if (chrome.runtime?.lastError) {
         // Ignore error
@@ -709,7 +709,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     if (!extensionId) return
 
     const urlsToOpen = savedTabsData.map(t => t.url)
-    
+
     chrome.runtime?.sendMessage?.(extensionId, { action: 'resumeActivityWithUrls', urls: urlsToOpen }, (response: any) => {
       if (chrome.runtime?.lastError) {
         // Ignore error
@@ -1207,13 +1207,13 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           <div className="mt-4 md:mt-24 flex justify-center md:justify-end">
             <Suspense fallback={<div className="w-full h-48 rounded-lg animate-pulse" style={{ backgroundColor: 'var(--bg-secondary)' }} />}>
               <ChartWithToggle
-              data={[
-                { label: 'Bookmarks', value: stats.total, color: 'var(--color-sky)' },
-                { label: 'To Read', value: stats.unread, color: 'var(--color-amber)' },
-                { label: 'Favorites', value: stats.favorites, color: 'var(--color-orange)' },
-                { label: 'Collections', value: stats.collections, color: 'var(--color-purple)' },
-              ]}
-            />
+                data={[
+                  { label: 'Bookmarks', value: stats.total, color: 'var(--color-sky)' },
+                  { label: 'To Read', value: stats.unread, color: 'var(--color-amber)' },
+                  { label: 'Favorites', value: stats.favorites, color: 'var(--color-orange)' },
+                  { label: 'Collections', value: stats.collections, color: 'var(--color-purple)' },
+                ]}
+              />
             </Suspense>
           </div>
         </div>
@@ -1562,7 +1562,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
             <Button onClick={() => setShowExtensionModal(false)} className="flex-1">Got it</Button>
             <Button variant="secondary" onClick={() => {
               setShowExtensionModal(false)
-              refreshExtensionInstalled().catch(() => {})
+              refreshExtensionInstalled().catch(() => { })
             }} className="flex-1">I&apos;ve Installed It</Button>
           </div>
         </div>
