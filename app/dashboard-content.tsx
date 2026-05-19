@@ -45,12 +45,66 @@ function safeGetHostname(url: string): string {
   }
 }
 
+function buildTabGroupingSignature(
+  tabs: Array<{ url: string; title?: string; domain?: string; duration_seconds?: number }>
+): string {
+  return tabs
+    .map((tab) => [
+      tab.url.trim(),
+      (tab.title || '').trim(),
+      (tab.domain || '').trim(),
+      String(tab.duration_seconds || 0)
+    ].join('|'))
+    .sort()
+    .join('||')
+}
+
 interface OpenTabItem {
   tabId: number
   url: string
   title: string
   favicon?: string
 }
+
+interface SavedTabItem {
+  id?: string
+  url: string
+  title: string
+  domain: string
+  duration_seconds?: number
+}
+
+interface SmartTabGroup {
+  id: string
+  label: string
+  reason: string
+  count: number
+  tabIds: number[]
+  sampleTitles: string[]
+}
+
+interface ExtensionChromeLike {
+  runtime?: {
+    sendMessage?: (
+      extensionId: string,
+      message: Record<string, unknown>,
+      callback?: (response: ExtensionSavedTabsResponse | ExtensionActionResponse | undefined) => void
+    ) => void
+    lastError?: { message?: string }
+  }
+}
+
+interface ExtensionSavedTabsResponse {
+  success?: boolean
+  savedTabs?: SavedTabItem[]
+}
+
+interface ExtensionActionResponse {
+  success?: boolean
+}
+
+type ResumeSelectMode = 'time' | 'semantic'
+type ResumeTimeOrder = 'desc' | 'asc'
 
 export function DashboardContent({ initialBookmarks, initialCollections, initialStats }: { initialBookmarks: Bookmark[]; initialCollections: Collection[]; initialStats: { totalBookmarks: number; favoritesCount: number; unreadCount: number } }) {
   const router = useRouter()
@@ -97,10 +151,17 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   const [showPermissionModal, setShowPermissionModal] = useState(false)
   const [showPreviousActivityModal, setShowPreviousActivityModal] = useState(false)
   const [showResumeModal, setShowResumeModal] = useState(false)
-  const [savedTabsData, setSavedTabsData] = useState<{ id?: string; url: string; title: string; domain: string; duration_seconds?: number }[]>([])
+  const [savedTabsData, setSavedTabsData] = useState<SavedTabItem[]>([])
   const [autoSelectCount, setAutoSelectCount] = useState(10)
+  const [resumeSelectMode, setResumeSelectMode] = useState<ResumeSelectMode>('time')
+  const [resumeTimeOrder, setResumeTimeOrder] = useState<ResumeTimeOrder>('desc')
   const [selectedResumeTabs, setSelectedResumeTabs] = useState<Set<string>>(new Set())
   const [loadingResumeTabs, setLoadingResumeTabs] = useState(false)
+  const [resumeSelectionLoading, setResumeSelectionLoading] = useState(false)
+  const [resumeSemanticGroups, setResumeSemanticGroups] = useState<SmartTabGroup[]>([])
+  const [selectedResumeSemanticGroupId, setSelectedResumeSemanticGroupId] = useState<string | null>(null)
+  const [resumeSelectionError, setResumeSelectionError] = useState<string | null>(null)
+  const [resumeSemanticCacheKey, setResumeSemanticCacheKey] = useState<string | null>(null)
   const [previousActivityData, setPreviousActivityData] = useState<Array<{
     id: string
     url: string
@@ -137,6 +198,17 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     description: '',
     is_public: false,
   })
+  const [showSmartOpenTabsModal, setShowSmartOpenTabsModal] = useState(false)
+  const [smartOpenTabsData, setSmartOpenTabsData] = useState<OpenTabItem[]>([])
+  const [smartOpenTabsGroups, setSmartOpenTabsGroups] = useState<SmartTabGroup[]>([])
+  const [selectedSmartGroupId, setSelectedSmartGroupId] = useState<string | null>(null)
+  const [selectedSmartTabIds, setSelectedSmartTabIds] = useState<Set<number>>(new Set())
+  const [loadingSmartOpenTabs, setLoadingSmartOpenTabs] = useState(false)
+  const [smartOpenTabsExtensionAvailable, setSmartOpenTabsExtensionAvailable] = useState(true)
+  const [smartOpenTabsError, setSmartOpenTabsError] = useState<string | null>(null)
+  const [smartOpenTabsActionLoading, setSmartOpenTabsActionLoading] = useState(false)
+  const [smartOpenTabsActionMessage, setSmartOpenTabsActionMessage] = useState<string | null>(null)
+  const [smartOpenTabsCacheKey, setSmartOpenTabsCacheKey] = useState<string | null>(null)
   const [sessionTabs, setSessionTabs] = useState<Array<{
     url: string
     title: string
@@ -637,7 +709,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   }
 
   const openResumeModal = () => {
-    const chrome = (window as typeof window & { chrome?: any }).chrome
+    const chrome = (window as typeof window & { chrome?: ExtensionChromeLike }).chrome
     if (!chrome?.runtime) return
 
     const extensionId = getExtensionId()
@@ -645,18 +717,24 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
     setLoadingResumeTabs(true)
     setShowResumeModal(true)
+    setResumeSelectionError(null)
+    setResumeSemanticGroups([])
+    setSelectedResumeSemanticGroupId(null)
+    setResumeSemanticCacheKey(null)
+    setResumeSelectMode('time')
+    setResumeTimeOrder('desc')
 
-    chrome.runtime?.sendMessage?.(extensionId, { action: 'getSavedTabs' }, (response: any) => {
+    chrome.runtime?.sendMessage?.(extensionId, { action: 'getSavedTabs' }, (response: ExtensionSavedTabsResponse | undefined) => {
       if (chrome.runtime?.lastError) {
         // Ignore error if extension is disconnected
       }
       if (response?.success && response.savedTabs) {
-        const tabsWithIds = response.savedTabs.map((tab: any, idx: number) => ({
+        const tabsWithIds = response.savedTabs.map((tab, idx: number) => ({
           ...tab,
           id: `tab-${idx}-${Math.random().toString(36).substr(2, 9)}`
         }))
         setSavedTabsData(tabsWithIds)
-        setSelectedResumeTabs(new Set(tabsWithIds.map((t: any) => t.id)))
+        setSelectedResumeTabs(new Set(tabsWithIds.map((t) => t.id).filter((id): id is string => Boolean(id))))
       } else {
         setSavedTabsData([])
       }
@@ -677,13 +755,139 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   }
 
   const handleAutoSelect = () => {
-    const sorted = [...savedTabsData].sort((a, b) => (b.duration_seconds || 0) - (a.duration_seconds || 0))
+    const sorted = [...savedTabsData].sort((a, b) => {
+      const difference = (b.duration_seconds || 0) - (a.duration_seconds || 0)
+      return resumeTimeOrder === 'desc' ? difference : -difference
+    })
     const topIds = sorted.slice(0, autoSelectCount).map(t => t.id as string)
     setSelectedResumeTabs(new Set(topIds))
+    setSelectedResumeSemanticGroupId(null)
+    setResumeSelectionError(null)
   }
 
+  const loadResumeSemanticGroups = useCallback(async () => {
+    const sourceTabs = savedTabsData.filter((tab): tab is SavedTabItem & { id: string } => Boolean(tab.id))
+    const currentSignature = buildTabGroupingSignature(sourceTabs)
+
+    if (
+      resumeSemanticCacheKey === currentSignature &&
+      resumeSemanticGroups.length > 0
+    ) {
+      return
+    }
+
+    const tabsForGrouping = sourceTabs.map((tab, index) => ({
+      tabId: index + 1,
+      url: tab.url,
+      title: tab.title
+    }))
+
+    if (tabsForGrouping.length === 0) {
+      setResumeSemanticGroups([])
+      setSelectedResumeTabs(new Set())
+      return
+    }
+
+    setResumeSelectionLoading(true)
+    setResumeSelectionError(null)
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const accessToken = session?.access_token
+
+      if (!accessToken) {
+        setResumeSelectionError('Please sign in again to load semantic tab groups.')
+        setResumeSemanticGroups([])
+        return
+      }
+
+      const response = await fetch('/api/ai/group-tabs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({ tabs: tabsForGrouping })
+      })
+
+      const payload = await response.json().catch(() => null) as { groups?: SmartTabGroup[]; error?: string } | null
+      if (!response.ok || !Array.isArray(payload?.groups)) {
+        setResumeSelectionError(payload?.error || 'Failed to load semantic groups.')
+        setResumeSemanticGroups([])
+        return
+      }
+
+      setResumeSemanticGroups(payload.groups)
+      setResumeSemanticCacheKey(currentSignature)
+      if (payload.groups.length > 0) {
+        const firstGroup = payload.groups[0]
+        setSelectedResumeSemanticGroupId(firstGroup.id)
+
+        const idLookup = new Map<number, string>()
+        tabsForGrouping.forEach((tab, index) => {
+          const savedTabId = sourceTabs[index]?.id
+          if (savedTabId) {
+            idLookup.set(tab.tabId, savedTabId)
+          }
+        })
+
+        const selectedIds = firstGroup.tabIds
+          .map((tabId) => idLookup.get(tabId))
+          .filter((id): id is string => Boolean(id))
+
+        setSelectedResumeTabs(new Set(selectedIds))
+      } else {
+        setSelectedResumeSemanticGroupId(null)
+        setSelectedResumeTabs(new Set())
+      }
+    } catch {
+      setResumeSelectionError('Failed to load semantic groups right now. Please try again.')
+      setResumeSemanticGroups([])
+    } finally {
+      setResumeSelectionLoading(false)
+    }
+  }, [resumeSemanticCacheKey, resumeSemanticGroups.length, savedTabsData])
+
+  const applyResumeSemanticGroup = (groupId: string) => {
+    const group = resumeSemanticGroups.find((item) => item.id === groupId)
+    if (!group) return
+
+    const sourceTabs = savedTabsData.filter((tab): tab is SavedTabItem & { id: string } => Boolean(tab.id))
+    const idLookup = new Map<number, string>()
+    sourceTabs.forEach((tab, index) => {
+      idLookup.set(index + 1, tab.id)
+    })
+
+    const selectedIds = group.tabIds
+      .map((tabId) => idLookup.get(tabId))
+      .filter((id): id is string => Boolean(id))
+
+    setSelectedResumeSemanticGroupId(groupId)
+    setSelectedResumeTabs(new Set(selectedIds))
+    setResumeSelectionError(null)
+  }
+
+  const handleResumeSelectionApply = async () => {
+    if (resumeSelectMode === 'time') {
+      handleAutoSelect()
+      return
+    }
+    await loadResumeSemanticGroups()
+  }
+
+  useEffect(() => {
+    if (!showResumeModal) return
+
+    if (resumeSelectMode === 'semantic') {
+      void loadResumeSemanticGroups()
+      return
+    }
+
+    setResumeSelectionError(null)
+  }, [loadResumeSemanticGroups, resumeSelectMode, showResumeModal])
+
   const resumeSelectedActivity = () => {
-    const chrome = (window as typeof window & { chrome?: any }).chrome
+    const chrome = (window as typeof window & { chrome?: ExtensionChromeLike }).chrome
     if (!chrome?.runtime) return
 
     const extensionId = getExtensionId()
@@ -691,7 +895,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
     const urlsToOpen = savedTabsData.filter(t => t.id && selectedResumeTabs.has(t.id)).map(t => t.url)
 
-    chrome.runtime?.sendMessage?.(extensionId, { action: 'resumeActivityWithUrls', urls: urlsToOpen }, (response: any) => {
+    chrome.runtime?.sendMessage?.(extensionId, { action: 'resumeActivityWithUrls', urls: urlsToOpen }, (response: ExtensionActionResponse | undefined) => {
       if (chrome.runtime?.lastError) {
         // Ignore error
       }
@@ -702,7 +906,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
   }
 
   const resumeAllActivity = () => {
-    const chrome = (window as typeof window & { chrome?: any }).chrome
+    const chrome = (window as typeof window & { chrome?: ExtensionChromeLike }).chrome
     if (!chrome?.runtime) return
 
     const extensionId = getExtensionId()
@@ -710,7 +914,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
 
     const urlsToOpen = savedTabsData.map(t => t.url)
 
-    chrome.runtime?.sendMessage?.(extensionId, { action: 'resumeActivityWithUrls', urls: urlsToOpen }, (response: any) => {
+    chrome.runtime?.sendMessage?.(extensionId, { action: 'resumeActivityWithUrls', urls: urlsToOpen }, (response: ExtensionActionResponse | undefined) => {
       if (chrome.runtime?.lastError) {
         // Ignore error
       }
@@ -777,6 +981,20 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     setShowOpenTabsCreateCollectionModal(false)
     setOpenTabsCollectionError(null)
     setOpenTabsCollectionForm({ name: '', description: '', is_public: false })
+  }
+
+  const closeSmartOpenTabsFlow = () => {
+    setShowSmartOpenTabsModal(false)
+    setSmartOpenTabsData([])
+    setSmartOpenTabsGroups([])
+    setSelectedSmartGroupId(null)
+    setSelectedSmartTabIds(new Set())
+    setLoadingSmartOpenTabs(false)
+    setSmartOpenTabsExtensionAvailable(true)
+    setSmartOpenTabsError(null)
+    setSmartOpenTabsActionLoading(false)
+    setSmartOpenTabsActionMessage(null)
+    setSmartOpenTabsCacheKey(null)
   }
 
   const closeOpenTabsFlow = () => {
@@ -937,6 +1155,157 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
       setOpenTabsExtensionAvailable(false)
     } finally {
       setLoadingOpenTabs(false)
+    }
+  }
+
+  const showSmartOpenTabs = async () => {
+    setShowSmartOpenTabsModal(true)
+    setLoadingSmartOpenTabs(true)
+    setSmartOpenTabsExtensionAvailable(true)
+    setSmartOpenTabsError(null)
+    setSmartOpenTabsActionMessage(null)
+    setSelectedSmartGroupId(null)
+    setSelectedSmartTabIds(new Set())
+
+    try {
+      const response = await sendExtensionMessage({ action: 'getOpenTabs' })
+      if (!response?.tabs || !Array.isArray(response.tabs)) {
+        setSmartOpenTabsData([])
+        setSmartOpenTabsGroups([])
+        setSmartOpenTabsExtensionAvailable(false)
+        return
+      }
+
+      const tabs = response.tabs as OpenTabItem[]
+      setSmartOpenTabsData(tabs)
+
+      const currentSignature = buildTabGroupingSignature(
+        tabs.map((tab) => ({
+          url: tab.url,
+          title: tab.title
+        }))
+      )
+
+      if (tabs.length === 0) {
+        setSmartOpenTabsGroups([])
+        return
+      }
+
+      if (smartOpenTabsCacheKey === currentSignature && smartOpenTabsGroups.length > 0) {
+        setLoadingSmartOpenTabs(false)
+        return
+      }
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const accessToken = session?.access_token
+
+        if (!accessToken) {
+          setSmartOpenTabsError('Please sign in again to use smart tab grouping.')
+          setSmartOpenTabsGroups([])
+          return
+        }
+
+        const groupResponse = await fetch('/api/ai/group-tabs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({ tabs })
+        })
+
+        const payload = await groupResponse.json().catch(() => null) as {
+          groups?: SmartTabGroup[]
+          error?: string
+        } | null
+
+        if (!groupResponse.ok) {
+          setSmartOpenTabsError(payload?.error || 'Failed to group your open tabs.')
+          setSmartOpenTabsGroups([])
+          return
+        }
+
+        const groups = Array.isArray(payload?.groups) ? payload.groups : []
+        setSmartOpenTabsGroups(groups)
+        setSmartOpenTabsCacheKey(currentSignature)
+      } catch {
+        setSmartOpenTabsError('Failed to analyze your tabs right now. Please try again.')
+        setSmartOpenTabsGroups([])
+      }
+    } catch {
+      setSmartOpenTabsData([])
+      setSmartOpenTabsGroups([])
+      setSmartOpenTabsExtensionAvailable(false)
+    } finally {
+      setLoadingSmartOpenTabs(false)
+    }
+  }
+
+  const applySmartGroupSelection = (groupId: string) => {
+    const group = smartOpenTabsGroups.find((item) => item.id === groupId)
+    if (!group) return
+
+    setSelectedSmartGroupId(group.id)
+    setSelectedSmartTabIds(new Set(group.tabIds))
+    setSmartOpenTabsActionMessage(null)
+  }
+
+  const toggleSmartTabSelection = (tabId: number) => {
+    setSelectedSmartTabIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(tabId)) {
+        next.delete(tabId)
+      } else {
+        next.add(tabId)
+      }
+      return next
+    })
+    setSmartOpenTabsActionMessage(null)
+  }
+
+  const selectAllSmartTabs = () => {
+    setSelectedSmartTabIds(new Set(smartOpenTabsData.map((tab) => tab.tabId)))
+    setSmartOpenTabsActionMessage(null)
+  }
+
+  const clearSmartTabSelection = () => {
+    setSelectedSmartTabIds(new Set())
+    setSmartOpenTabsActionMessage(null)
+  }
+
+  const openSelectedSmartTabs = async () => {
+    if (selectedSmartTabIds.size === 0) return
+
+    const urlsToOpen = smartOpenTabsData
+      .filter((tab) => selectedSmartTabIds.has(tab.tabId))
+      .map((tab) => tab.url)
+
+    if (urlsToOpen.length === 0) return
+
+    setSmartOpenTabsActionLoading(true)
+    setSmartOpenTabsActionMessage(null)
+
+    try {
+      const response = await sendExtensionMessage({
+        action: 'openUrls',
+        urls: urlsToOpen
+      })
+
+      if (response?.success === true) {
+        const groupName = smartOpenTabsGroups.find((group) => group.id === selectedSmartGroupId)?.label
+        setSmartOpenTabsActionMessage(
+          groupName
+            ? `Opened ${urlsToOpen.length} tab${urlsToOpen.length === 1 ? '' : 's'} from ${groupName}.`
+            : `Opened ${urlsToOpen.length} selected tab${urlsToOpen.length === 1 ? '' : 's'}.`
+        )
+      } else {
+        setSmartOpenTabsActionMessage('Could not open the selected tabs. Please try again.')
+      }
+    } catch {
+      setSmartOpenTabsActionMessage('Could not reach the extension to open the selected tabs.')
+    } finally {
+      setSmartOpenTabsActionLoading(false)
     }
   }
 
@@ -1169,6 +1538,24 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
     return title || url
   }
 
+  const selectedSmartGroup = smartOpenTabsGroups.find((group) => group.id === selectedSmartGroupId) || null
+  const selectedResumeSemanticGroup = resumeSemanticGroups.find((group) => group.id === selectedResumeSemanticGroupId) || null
+  const orderedResumeTabs = [...savedTabsData].sort((a, b) => {
+    if (resumeSelectMode === 'time') {
+      const difference = (b.duration_seconds || 0) - (a.duration_seconds || 0)
+      if (difference !== 0) {
+        return resumeTimeOrder === 'desc' ? difference : -difference
+      }
+      return (a.title || a.url).localeCompare(b.title || b.url)
+    }
+
+    const aSelected = a.id ? selectedResumeTabs.has(a.id) : false
+    const bSelected = b.id ? selectedResumeTabs.has(b.id) : false
+    if (aSelected && !bSelected) return -1
+    if (!aSelected && bSelected) return 1
+    return (a.title || a.url).localeCompare(b.title || b.url)
+  })
+
   if (loading) {
     return (
       <DashboardLayout>
@@ -1249,24 +1636,42 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                       <span>📊 View History</span>
                     </button>
                     {isChromium && (
-                      <button
-                        onClick={showOpenTabsBulkAdd}
-                        className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
-                        style={{ backgroundColor: '#0f766e', color: 'white', cursor: 'pointer' }}
-                      >
-                        <span>🗂️ Add All Opened Tabs</span>
-                      </button>
+                      <>
+                        <button
+                          onClick={showOpenTabsBulkAdd}
+                          className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
+                          style={{ backgroundColor: '#0f766e', color: 'white', cursor: 'pointer' }}
+                        >
+                          <span>🗂️ Add All Opened Tabs</span>
+                        </button>
+                        <button
+                          onClick={showSmartOpenTabs}
+                          className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
+                          style={{ backgroundColor: '#1d4ed8', color: 'white', cursor: 'pointer' }}
+                        >
+                          <span>🧠 Smart Open Tabs</span>
+                        </button>
+                      </>
                     )}
                   </div>
                 )}
                 {!isGuest && !(hasSavedSession || hasServerActivity) && isChromium && (
-                  <button
-                    onClick={showOpenTabsBulkAdd}
-                    className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
-                    style={{ backgroundColor: '#0f766e', color: 'white', cursor: 'pointer' }}
-                  >
-                    <span>🗂️ Add All Opened Tabs</span>
-                  </button>
+                  <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                    <button
+                      onClick={showOpenTabsBulkAdd}
+                      className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
+                      style={{ backgroundColor: '#0f766e', color: 'white', cursor: 'pointer' }}
+                    >
+                      <span>🗂️ Add All Opened Tabs</span>
+                    </button>
+                    <button
+                      onClick={showSmartOpenTabs}
+                      className="w-full sm:w-auto px-3 py-2.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] flex items-center justify-center gap-2 text-sm"
+                      style={{ backgroundColor: '#1d4ed8', color: 'white', cursor: 'pointer' }}
+                    >
+                      <span>🧠 Smart Open Tabs</span>
+                    </button>
+                  </div>
                 )}
                 {/* Extension status when not tracking */}
                 {extensionInstalled === true ? (
@@ -1754,40 +2159,127 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
           ) : (
             <>
               {savedTabsData.length >= 5 && (
-                <div className="flex items-center justify-between mb-2 p-3 rounded-lg border" style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Auto-select top:</span>
-                    <input
-                      type="number"
-                      min="1"
-                      max={savedTabsData.length}
-                      value={autoSelectCount}
-                      onChange={(e) => setAutoSelectCount(parseInt(e.target.value) || 1)}
-                      className="w-16 px-2 py-1 text-sm border rounded bg-transparent focus:outline-none focus:ring-1 focus:ring-purple-500"
-                      style={{ color: 'var(--text-primary)', borderColor: 'var(--border-color)' }}
-                    />
-                    <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>tabs</span>
+                <div className="mb-3 p-3 rounded-lg border space-y-3" style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}>
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Select by:</span>
+                      <select
+                        value={resumeSelectMode}
+                        onChange={(e) => setResumeSelectMode(e.target.value as ResumeSelectMode)}
+                        className="px-2 py-1 text-sm border rounded bg-transparent focus:outline-none focus:ring-1 focus:ring-purple-500"
+                        style={{ color: 'var(--text-primary)', borderColor: 'var(--border-color)' }}
+                      >
+                        <option value="time">Time</option>
+                        <option value="semantic">Semantically</option>
+                      </select>
+                    </div>
+
+                    {resumeSelectMode === 'time' && (
+                      <button
+                        onClick={() => { void handleResumeSelectionApply() }}
+                        disabled={resumeSelectionLoading}
+                        className="px-3 py-1.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] text-sm shadow-sm"
+                        style={{ backgroundColor: '#8b5cf6', color: 'white', cursor: resumeSelectionLoading ? 'not-allowed' : 'pointer' }}
+                      >
+                        {resumeSelectionLoading ? 'Selecting...' : 'Apply'}
+                      </button>
+                    )}
                   </div>
-                  <button
-                    onClick={handleAutoSelect}
-                    className="px-3 py-1.5 rounded-lg font-medium transition-all duration-75 active:scale-95 hover:scale-[1.02] text-sm shadow-sm"
-                    style={{ backgroundColor: '#8b5cf6', color: 'white', cursor: 'pointer' }}
-                  >
-                    Select By Time
-                  </button>
+
+                  {resumeSelectMode === 'time' ? (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Order</span>
+                      <select
+                        value={resumeTimeOrder}
+                        onChange={(e) => setResumeTimeOrder(e.target.value as ResumeTimeOrder)}
+                        className="px-2 py-1 text-sm border rounded bg-transparent focus:outline-none focus:ring-1 focus:ring-purple-500"
+                        style={{ color: 'var(--text-primary)', borderColor: 'var(--border-color)' }}
+                      >
+                        <option value="desc">Most time first</option>
+                        <option value="asc">Least time first</option>
+                      </select>
+                      <input
+                        type="number"
+                        min="1"
+                        max={savedTabsData.length}
+                        value={autoSelectCount}
+                        onChange={(e) => setAutoSelectCount(parseInt(e.target.value) || 1)}
+                        className="w-16 px-2 py-1 text-sm border rounded bg-transparent focus:outline-none focus:ring-1 focus:ring-purple-500"
+                        style={{ color: 'var(--text-primary)', borderColor: 'var(--border-color)' }}
+                      />
+                      <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>tabs</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                        Choose a semantic group from your tracked tabs. Selecting a group will preselect exactly those tabs below.
+                      </div>
+
+                      {resumeSelectionLoading ? (
+                        <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                          Loading semantic groups...
+                        </div>
+                      ) : resumeSelectionError ? (
+                        <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(220, 38, 38, 0.1)', border: '1px solid rgba(220, 38, 38, 0.35)', color: '#dc2626' }}>
+                          {resumeSelectionError}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>Group</span>
+                            <select
+                              value={selectedResumeSemanticGroupId || ''}
+                              onChange={(e) => applyResumeSemanticGroup(e.target.value)}
+                              className="min-w-[220px] px-3 py-2 text-sm border rounded bg-transparent focus:outline-none focus:ring-1 focus:ring-purple-500"
+                              style={{ color: 'var(--text-primary)', borderColor: 'var(--border-color)' }}
+                            >
+                              {resumeSemanticGroups.map((group) => (
+                                <option key={group.id} value={group.id}>
+                                  {group.label} ({group.count})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {selectedResumeSemanticGroup && (
+                            <div
+                              className="p-4 rounded-xl border"
+                              style={{
+                                borderColor: 'rgba(124, 58, 237, 0.35)',
+                                backgroundColor: 'rgba(124, 58, 237, 0.08)'
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="min-w-0 flex-1">
+                                  <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                    {selectedResumeSemanticGroup.label}
+                                  </p>
+                                  <p className="text-sm mt-1" style={{ color: 'var(--text-secondary)' }}>
+                                    {selectedResumeSemanticGroup.reason}
+                                  </p>
+                                  {selectedResumeSemanticGroup.sampleTitles.length > 0 && (
+                                    <p className="text-xs mt-2 truncate" style={{ color: 'var(--text-secondary)' }}>
+                                      {selectedResumeSemanticGroup.sampleTitles.join(' • ')}
+                                    </p>
+                                  )}
+                                </div>
+                                <span className="text-xs px-2 py-1 rounded-full flex-shrink-0" style={{ backgroundColor: 'rgba(124, 58, 237, 0.15)', color: '#6d28d9' }}>
+                                  {selectedResumeSemanticGroup.count}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
               <div className="max-h-96 overflow-y-auto pr-2" style={{
                 scrollbarWidth: 'thin',
                 scrollbarColor: 'rgba(139, 92, 246, 0.3) transparent'
               }}>
-                {[...savedTabsData].sort((a, b) => {
-                  const aSelected = a.id ? selectedResumeTabs.has(a.id) : false;
-                  const bSelected = b.id ? selectedResumeTabs.has(b.id) : false;
-                  if (aSelected && !bSelected) return -1;
-                  if (!aSelected && bSelected) return 1;
-                  return 0;
-                }).map((item) => (
+                {orderedResumeTabs.map((item) => (
                   <div
                     key={item.id}
                     onClick={() => item.id && toggleResumeTabSelection(item.id)}
@@ -2034,6 +2526,207 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
                   className="flex-1"
                 >
                   Add In Collection
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showSmartOpenTabsModal}
+        onClose={closeSmartOpenTabsFlow}
+        title="Smart Open Tabs"
+        size="lg"
+      >
+        <div className="space-y-4">
+          {loadingSmartOpenTabs ? (
+            <div className="text-center py-10" style={{ color: 'var(--text-secondary)' }}>
+              <div className="inline-block w-6 h-6 border-2 border-blue-700 border-t-transparent rounded-full animate-spin mb-2"></div>
+              <p>Analyzing your open tabs...</p>
+            </div>
+          ) : !smartOpenTabsExtensionAvailable ? (
+            <div className="p-4 rounded-lg text-sm" style={{ backgroundColor: 'rgba(251, 146, 60, 0.1)', border: '1px solid rgba(251, 146, 60, 0.3)' }}>
+              <p style={{ color: '#ea580c' }}>
+                Extension not detected. Install or enable the WorkStack extension to use smart tab grouping.
+              </p>
+            </div>
+          ) : smartOpenTabsData.length === 0 ? (
+            <div className="text-center py-8" style={{ color: 'var(--text-secondary)' }}>
+              <p className="text-4xl mb-2">🧠</p>
+              <p>No opened tabs found</p>
+              <p className="text-sm mt-1">Open some browser tabs and try again.</p>
+            </div>
+          ) : (
+            <>
+              <div className="p-3 rounded-lg" style={{ backgroundColor: 'rgba(29, 78, 216, 0.1)', color: '#1d4ed8' }}>
+                {smartOpenTabsData.length} open {smartOpenTabsData.length === 1 ? 'tab' : 'tabs'} analyzed into {smartOpenTabsGroups.length} semantic {smartOpenTabsGroups.length === 1 ? 'group' : 'groups'}.
+                Pick a group to preselect its tabs, then adjust anything manually before opening.
+              </div>
+
+              {smartOpenTabsError && (
+                <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(220, 38, 38, 0.1)', border: '1px solid rgba(220, 38, 38, 0.35)', color: '#dc2626' }}>
+                  {smartOpenTabsError}
+                </div>
+              )}
+
+              {smartOpenTabsGroups.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      Suggested Groups
+                    </h3>
+                    <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                      {smartOpenTabsGroups.length} found
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {smartOpenTabsGroups.map((group) => {
+                      const isActive = group.id === selectedSmartGroupId
+                      return (
+                        <button
+                          key={group.id}
+                          type="button"
+                          onClick={() => applySmartGroupSelection(group.id)}
+                          className="text-left p-4 rounded-xl border transition-all duration-100 hover:scale-[1.01]"
+                          style={{
+                            borderColor: isActive ? '#2563eb' : 'var(--border-color)',
+                            backgroundColor: isActive ? 'rgba(37, 99, 235, 0.08)' : 'var(--bg-secondary)',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                              {group.label}
+                            </p>
+                            <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: isActive ? 'rgba(37, 99, 235, 0.15)' : 'var(--bg-primary)', color: isActive ? '#1d4ed8' : 'var(--text-secondary)' }}>
+                              {group.count}
+                            </span>
+                          </div>
+                          <p className="text-sm mt-2" style={{ color: 'var(--text-secondary)' }}>
+                            {group.reason}
+                          </p>
+                          {group.sampleTitles.length > 0 && (
+                            <p className="text-xs mt-3 truncate" style={{ color: 'var(--text-secondary)' }}>
+                              {group.sampleTitles.join(' • ')}
+                            </p>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div className="rounded-xl border p-4 space-y-4" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}>
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      Selected Tabs
+                    </h3>
+                    <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                      {selectedSmartGroup
+                        ? `${selectedSmartGroup.label} suggested ${selectedSmartGroup.count} tab${selectedSmartGroup.count === 1 ? '' : 's'}. You can add or remove anything below.`
+                        : 'Choose a group above to preselect tabs, then tweak the selection if you want.'}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={selectAllSmartTabs}
+                      className="text-xs px-3 py-1.5 rounded-lg"
+                      style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)', cursor: 'pointer' }}
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearSmartTabSelection}
+                      className="text-xs px-3 py-1.5 rounded-lg"
+                      style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)', cursor: 'pointer' }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  {selectedSmartTabIds.size} of {smartOpenTabsData.length} selected
+                </div>
+
+                <div className="max-h-80 overflow-y-auto space-y-2 pr-1">
+                  {smartOpenTabsData.map((tab) => {
+                    const isSelected = selectedSmartTabIds.has(tab.tabId)
+                    return (
+                      <button
+                        key={`${tab.tabId}-${tab.url}`}
+                        type="button"
+                        onClick={() => toggleSmartTabSelection(tab.tabId)}
+                        className="w-full text-left p-3 rounded-lg border transition-colors"
+                        style={{
+                          borderColor: isSelected ? '#2563eb' : 'var(--border-color)',
+                          backgroundColor: isSelected ? 'rgba(37, 99, 235, 0.08)' : 'var(--bg-primary)',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="flex-shrink-0 pt-0.5">
+                            <div
+                              className="w-5 h-5 rounded border-2 flex items-center justify-center"
+                              style={{
+                                backgroundColor: isSelected ? '#2563eb' : 'transparent',
+                                borderColor: isSelected ? '#2563eb' : '#94a3b8'
+                              }}
+                            >
+                              {isSelected && (
+                                <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                </svg>
+                              )}
+                            </div>
+                          </div>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={`https://www.google.com/s2/favicons?domain=${safeGetHostname(tab.url)}&sz=32`}
+                            className="w-6 h-6 rounded flex-shrink-0"
+                            alt="Favicon"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                              {getDisplayTitle(tab.url, tab.title || safeGetHostname(tab.url))}
+                            </p>
+                            <p className="text-sm truncate" style={{ color: 'var(--text-secondary)' }}>
+                              {tab.url}
+                            </p>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {smartOpenTabsActionMessage && (
+                <div className="p-3 rounded-lg text-sm" style={{ backgroundColor: 'rgba(15, 118, 110, 0.12)', color: '#0f766e' }}>
+                  {smartOpenTabsActionMessage}
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Button type="button" variant="secondary" onClick={closeSmartOpenTabsFlow} className="flex-1">
+                  Close
+                </Button>
+                <Button
+                  type="button"
+                  onClick={openSelectedSmartTabs}
+                  disabled={selectedSmartTabIds.size === 0 || smartOpenTabsActionLoading}
+                  className="flex-1"
+                >
+                  {smartOpenTabsActionLoading
+                    ? 'Opening...'
+                    : `Open ${selectedSmartTabIds.size} Selected Tab${selectedSmartTabIds.size === 1 ? '' : 's'}`}
                 </Button>
               </div>
             </>
