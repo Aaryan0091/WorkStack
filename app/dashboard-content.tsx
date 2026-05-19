@@ -1753,7 +1753,7 @@ export function DashboardContent({ initialBookmarks, initialCollections, initial
             </div>
           ) : (
             <>
-              {savedTabsData.length > 10 && (
+              {savedTabsData.length >= 5 && (
                 <div className="flex items-center justify-between mb-2 p-3 rounded-lg border" style={{ backgroundColor: 'var(--bg-secondary)', borderColor: 'var(--border-color)' }}>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>Auto-select top:</span>
