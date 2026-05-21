@@ -550,7 +550,7 @@ Notes:    ONE entry per (tracking_session_id + tab_id). Updates URL/title/durati
 
 ### Overview
 - **Name:** WorkStack Tab Tracker
-- **Version:** 5.0.0
+- **Version:** 5.2.0
 - **Manifest:** V3 (Service Worker)
 - **Permissions:** tabs, storage, idle, alarms
 

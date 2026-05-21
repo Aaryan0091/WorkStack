@@ -6,6 +6,10 @@ import { isChromiumBased, getBrowserName } from '@/lib/browser-detect'
 import { getExtensionId, isExtensionInstalledViaContentScript } from '@/lib/extension-detect'
 import { DashboardLayout } from '@/components/dashboard-layout'
 import { useExtensionStatusStore } from '@/lib/stores/extension-status-store'
+import {
+  WORKSTACK_EXTENSION_VERSION,
+  WORKSTACK_EXTENSION_ZIP_FILENAME,
+} from '@/lib/extension-release'
 
 export default function ExtensionPage() {
   const router = useRouter()
@@ -114,7 +118,7 @@ export default function ExtensionPage() {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = 'workstack-extension.zip'
+      a.download = WORKSTACK_EXTENSION_ZIP_FILENAME
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -169,6 +173,9 @@ export default function ExtensionPage() {
           </h1>
           <p className="text-lg" style={{ color: 'var(--text-secondary)' }}>
             Track your browsing activity and boost your productivity
+          </p>
+          <p className="text-sm mt-2" style={{ color: 'var(--text-secondary)' }}>
+            Current extension version: {WORKSTACK_EXTENSION_VERSION}
           </p>
         </div>
 
@@ -334,7 +341,7 @@ export default function ExtensionPage() {
         {!extensionInstalled && mounted && supported && showManual && (
           <div className="rounded-xl shadow-lg p-8 mb-8" style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)' }}>
             <h2 className="text-2xl font-bold mb-6" style={{ color: 'var(--text-primary)' }}>
-              Manual Installation (Developer Mode)
+              Manual Installation (Developer Mode, v{WORKSTACK_EXTENSION_VERSION})
             </h2>
             
             <div className="mb-8">
@@ -372,7 +379,7 @@ export default function ExtensionPage() {
                     Extract ZIP File
                   </h3>
                   <p className="text-sm mb-3" style={{ color: 'var(--text-secondary)' }}>
-                    Find <code className="bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">workstack-extension.zip</code> in your Downloads folder and extract it.
+                    Find <code className="bg-gray-200 dark:bg-gray-700 px-2 py-1 rounded">{WORKSTACK_EXTENSION_ZIP_FILENAME}</code> in your Downloads folder and extract it.
                   </p>
                 </div>
               </div>
