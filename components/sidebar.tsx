@@ -461,22 +461,11 @@ export function Sidebar() {
         </div>
       ) : (
         <div className="p-6 border-b sidebar-border">
-          <div className="flex items-center justify-between w-full shrink-0">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{
-                background: 'linear-gradient(135deg, var(--color-primary) 0%, #8b5cf6 100%)',
-                boxShadow: '0 4px 16px rgba(59, 130, 246, 0.4)'
-              }}>
-                <span className="text-sm font-bold text-white">W</span>
-              </div>
-              <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
-                WorkStack
-              </h1>
-            </div>
+          <div className="flex items-center w-full shrink-0 gap-3">
             <button
               type="button"
               onClick={toggleDesktopSidebar}
-              className="p-2.5 rounded-xl transition-all duration-200 shrink-0"
+              className="p-2.5 rounded-xl transition-all duration-200 shrink-0 relative z-10"
               style={{
                 color: 'var(--text-secondary)',
                 cursor: 'pointer',
@@ -494,6 +483,17 @@ export function Sidebar() {
             >
               <Menu className="w-5 h-5" />
             </button>
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{
+                background: 'linear-gradient(135deg, var(--color-primary) 0%, #8b5cf6 100%)',
+                boxShadow: '0 4px 16px rgba(59, 130, 246, 0.4)'
+              }}>
+                <span className="text-sm font-bold text-white">W</span>
+              </div>
+              <h1 className="text-xl font-semibold" style={{ color: 'var(--text-primary)' }}>
+                WorkStack
+              </h1>
+            </div>
           </div>
         </div>
       )}
