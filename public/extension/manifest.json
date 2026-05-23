@@ -1,12 +1,11 @@
 {
   "manifest_version": 3,
   "name": "WorkStack Tab Tracker",
-  "version": "5.2.0",
+  "version": "5.2.1",
   "description": "Automatically track your browsing activity and sync to WorkStack.",
   "permissions": [
     "tabs",
     "storage",
-    "idle",
     "alarms"
   ],
   "host_permissions": [

@@ -307,7 +307,7 @@ chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => 
     })
     return true
   } else if (request.action === 'ping') {
-    sendResponse({ success: true, version: '5.2.0' })
+    sendResponse({ success: true, version: '5.2.1' })
   } else if (request.action === 'clearUserData') {
     // Clear user data on logout
     userId = null
