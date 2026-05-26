@@ -211,7 +211,7 @@ export default function ExtensionPage() {
                 </h2>
                 <div className="flex flex-col sm:flex-row gap-4 justify-center items-center">
                   <a
-                    href="https://chrome.google.com/webstore/detail/YOUR_EXTENSION_ID_HERE" // TODO: Add actual Chrome Web Store URL
+                    href="https://chromewebstore.google.com/detail/workstack-tab-tracker/pojbloacnbgcjhpimpffijmafhcoapch"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="px-8 py-4 rounded-xl font-semibold text-lg transition-all duration-75 hover:scale-105 active:scale-95 flex items-center gap-3"
