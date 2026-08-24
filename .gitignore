@@ -23,6 +23,9 @@
 # misc
 .DS_Store
 *.pem
+/*.mov
+/workstack-extension-*.zip
+client_secret*.json
 
 # debug
 npm-debug.log*

@@ -100,6 +100,14 @@ function extractDomain(url) {
   }
 }
 
+function isWorkStackSite(url) {
+  const domain = extractDomain(url).toLowerCase()
+  return domain === 'aaryn.me' ||
+    domain.endsWith('.aaryn.me') ||
+    domain === 'workstack.vercel.app' ||
+    domain === 'work-stack-ten.vercel.app'
+}
+
 // Helper: Check if URL is a special page
 function isSpecialUrl(url) {
   return !url ||
@@ -307,7 +315,7 @@ chrome.runtime.onMessageExternal.addListener((request, sender, sendResponse) => 
     })
     return true
   } else if (request.action === 'ping') {
-    sendResponse({ success: true, version: '5.2.1' })
+    sendResponse({ success: true, version: '5.2.2' })
   } else if (request.action === 'clearUserData') {
     // Clear user data on logout
     userId = null
@@ -719,8 +727,8 @@ function makeTabActive(tab) {
   // Don't track special URLs (chrome://, etc.)
   if (isSpecialUrl(tab.url)) return
 
-  // In manual mode, only track workstack.vercel.app
-  if (!isAutomaticMode && extractDomain(tab.url) !== 'workstack.vercel.app') return
+  // In manual mode, only track the WorkStack web application.
+  if (!isAutomaticMode && !isWorkStackSite(tab.url)) return
 
   const domain = extractDomain(tab.url)
   const now = Date.now()

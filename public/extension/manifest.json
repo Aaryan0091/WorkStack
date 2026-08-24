@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WorkStack Tab Tracker",
-  "version": "5.2.1",
+  "version": "5.2.2",
   "description": "Automatically track your browsing activity and sync to WorkStack.",
   "permissions": [
     "tabs",
@@ -11,6 +11,8 @@
   "host_permissions": [
     "http://localhost:3000/*",
     "http://127.0.0.1:3000/*",
+    "https://aaryn.me/*",
+    "https://*.aaryn.me/*",
     "https://workstack.vercel.app/*",
     "https://*.vercel.app/*"
   ],
@@ -22,6 +24,8 @@
       "matches": [
         "http://localhost:3000/*",
         "http://127.0.0.1:3000/*",
+        "https://aaryn.me/*",
+        "https://*.aaryn.me/*",
         "https://workstack.vercel.app/*",
         "https://*.vercel.app/*"
       ],
@@ -46,6 +50,8 @@
     "matches": [
       "http://localhost:3000/*",
       "http://127.0.0.1:3000/*",
+      "https://aaryn.me/*",
+      "https://*.aaryn.me/*",
       "https://workstack.vercel.app/*",
       "https://*.vercel.app/*"
     ]

@@ -474,7 +474,7 @@ export default function ExtensionPage() {
               <ol className="list-decimal list-inside space-y-2 text-sm" style={{ color: 'var(--text-secondary)' }}>
                 <li><strong>Reload extension:</strong> Go to brave://extensions/ or chrome://extensions/ and click the refresh icon on the WorkStack extension card</li>
                 <li><strong>Refresh page:</strong> After reloading the extension, refresh your WorkStack tab</li>
-                <li><strong>Check URL:</strong> Make sure you are visiting https://workstack.vercel.app (not with www)</li>
+                <li><strong>Check URL:</strong> Make sure you are visiting the WorkStack site on aaryn.me or an aaryn.me subdomain</li>
                 <li><strong>Disable Brave Shields:</strong> Click the Brave Shields icon and set it to &quot;Do not block anything&quot; for the WorkStack site</li>
               </ol>
             </div>
